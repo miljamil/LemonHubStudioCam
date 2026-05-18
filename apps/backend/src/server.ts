@@ -3,7 +3,11 @@ import cors from 'cors';
 import multer from 'multer';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
 import { z } from 'zod';
+import ffmpegStatic from 'ffmpeg-static';
+import Ffmpeg from 'fluent-ffmpeg';
 import { sanitizeRecipients, MAX_RECIPIENTS } from '@studiocam/shared';
 import { config } from './config.js';
 import { db } from './db.js';
@@ -36,6 +40,82 @@ const upload = multer({
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, time: new Date().toISOString() });
 });
+
+// ----- Watermark post-processing -----
+if (ffmpegStatic) Ffmpeg.setFfmpegPath(ffmpegStatic);
+
+const WATERMARK_ASSET_PATH = path.resolve(__dirname, '../assets/watermark.png');
+
+/**
+ * Composites watermark.png into the bottom-right corner of every video frame.
+ * Uses the ffmpeg movie+overlay filter so it works with any container/codec
+ * the browser produces (webm VP8/VP9, mp4 H.264, ogg Theora, etc.).
+ *
+ * The watermark is padded 16 px from the bottom-right edge and scaled to at
+ * most 20 % of the video width while preserving its aspect ratio.
+ */
+async function applyWatermark(buffer: Buffer, mimeType: string, traceId: string): Promise<Buffer> {
+  console.info('[studiocam][postprocess:watermark] starting', {
+    traceId,
+    assetPath: WATERMARK_ASSET_PATH,
+    assetExists: fs.existsSync(WATERMARK_ASSET_PATH),
+    bufferSize: buffer.length,
+    mimeType,
+  });
+  if (!fs.existsSync(WATERMARK_ASSET_PATH)) {
+    console.warn('[studiocam][postprocess:watermark] asset not found, skipping', {
+      traceId,
+      path: WATERMARK_ASSET_PATH,
+    });
+    return buffer;
+  }
+
+  const tmpDir = os.tmpdir();
+  const id = crypto.randomBytes(8).toString('hex');
+  // Guess an extension so ffmpeg can auto-detect the container.
+  const inExt = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogv' : 'webm';
+  const inPath = path.join(tmpDir, `studiocam-in-${id}.${inExt}`);
+  const outPath = path.join(tmpDir, `studiocam-out-${id}.${inExt}`);
+
+  await fs.promises.writeFile(inPath, buffer);
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      Ffmpeg(inPath)
+        .input(WATERMARK_ASSET_PATH)
+        // Overlay watermark at bottom-right with 16px padding.
+        // Scale watermark to 15% of main video height, preserving aspect ratio.
+        .complexFilter(
+          '[1:v][0:v]scale2ref=oh*mdar:ih*0.15[wm][vid];[vid][wm]overlay=W-w-16:H-h-16'
+        )
+        // Copy audio without re-encoding.
+        .outputOptions(['-c:a', 'copy', '-map', '0:a?'])
+        .output(outPath)
+        .on('end', () => resolve())
+        .on('error', (err) => reject(err))
+        .run();
+    });
+
+    const result = await fs.promises.readFile(outPath);
+    console.info('[studiocam][postprocess:watermark] applied', {
+      traceId,
+      originalBytes: buffer.length,
+      processedBytes: result.length,
+    });
+    return result;
+  } catch (err) {
+    console.error('[studiocam][postprocess:watermark] ffmpeg failed, returning original', {
+      traceId,
+      error: (err as Error).message,
+    });
+    return buffer;
+  } finally {
+    await Promise.allSettled([
+      fs.promises.unlink(inPath),
+      fs.promises.unlink(outPath),
+    ]);
+  }
+}
 
 app.get('/api/storage/settings', (_req, res) => {
   const settings = loadStorageSettings();
@@ -274,6 +354,8 @@ const metaSchema = z.object({
   recipients: z.string().min(3), // JSON-encoded array
   mimeType: z.string().min(3),
   label: z.string().optional(),
+  watermark: z.union([z.literal('1'), z.literal('0'), z.literal('true'), z.literal('false')]).optional(),
+  qualityPreset: z.enum(['auto', '480p', '720p', '1080p', '4k']).optional(),
 });
 
 app.post(
@@ -319,13 +401,27 @@ app.post(
       const filename =
         `${(meta.label ?? 'recording').replace(/[^a-z0-9_-]+/gi, '_')}` +
         `_${meta.sessionId.slice(0, 8)}_p${String(meta.chunkIndex + 1).padStart(2, '0')}.${ext}`;
+
+      const watermarkRequested = meta.watermark === '1' || meta.watermark === 'true';
+      console.info('[studiocam][upload:options]', {
+        traceId,
+        qualityPreset: meta.qualityPreset ?? 'auto',
+        watermarkRequested,
+      });
+
+      // Post-processing: composite watermark before storage / email.
+      let processedBuffer = req.file.buffer;
+      if (watermarkRequested) {
+        processedBuffer = await applyWatermark(processedBuffer, meta.mimeType, traceId);
+      }
+
       const storageSettings = loadStorageSettings();
       const shouldUseDrive =
         storageSettings.storageMode === 'google-drive' && driveLinked(storageSettings);
 
       const uploaded = shouldUseDrive
-        ? await uploadToDrive(filename, meta.mimeType, req.file.buffer, storageSettings.google)
-        : await saveLocally(filename, req.file.buffer);
+        ? await uploadToDrive(filename, meta.mimeType, processedBuffer, storageSettings.google)
+        : await saveLocally(filename, processedBuffer);
 
       console.info('[studiocam][upload:stored]', {
         traceId,
@@ -340,10 +436,10 @@ app.post(
 
       let mailStatus: 'sent' | 'skipped-smtp' = 'skipped-smtp';
       if (smtpIsConfigured()) {
-        const localAttachment = !shouldUseDrive && req.file.size <= 20 * 1024 * 1024
+        const localAttachment = !shouldUseDrive && processedBuffer.length <= 20 * 1024 * 1024
           ? {
               filename,
-              content: req.file.buffer,
+              content: processedBuffer,
               contentType: meta.mimeType,
             }
           : undefined;

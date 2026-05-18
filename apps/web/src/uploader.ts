@@ -7,6 +7,10 @@ export interface UploadOpts {
   label?: string;
   /** When true, the chunk blob is wrapped in a ZIP before upload. */
   zip?: boolean;
+  /** When true, ask the backend to apply the watermark during post-processing. */
+  watermark?: boolean;
+  /** Resolution preset selected at capture time, forwarded to the backend for logging/post-processing. */
+  qualityPreset?: 'auto' | '480p' | '720p' | '1080p' | '4k';
 }
 
 export interface UploadResponse {
@@ -50,6 +54,8 @@ export async function uploadChunk(
   form.append('recipients', JSON.stringify(opts.recipients));
   form.append('mimeType', mime);
   if (opts.label) form.append('label', opts.label);
+  if (opts.watermark) form.append('watermark', '1');
+  if (opts.qualityPreset) form.append('qualityPreset', opts.qualityPreset);
 
   const res = await fetch('/api/recordings', { method: 'POST', body: form });
   if (!res.ok) {

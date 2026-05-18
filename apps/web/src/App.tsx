@@ -11,6 +11,21 @@ type SourceKind = 'camera' | 'screen' | 'ipcam';
 type StorageMode = 'local' | 'google-drive';
 type ChunkState = 'recorded' | 'uploading' | 'done' | 'error';
 type TraceKind = 'info' | 'success' | 'warn' | 'error';
+type QualityPreset = 'auto' | '480p' | '720p' | '1080p' | '4k';
+
+interface ResolutionSpec {
+  width: number;
+  height: number;
+  frameRate: number;
+  label: string;
+}
+
+const RESOLUTION_PRESETS: Record<Exclude<QualityPreset, 'auto'>, ResolutionSpec> = {
+  '480p': { width: 854, height: 480, frameRate: 30, label: 'SD 480p' },
+  '720p': { width: 1280, height: 720, frameRate: 30, label: 'HD 720p' },
+  '1080p': { width: 1920, height: 1080, frameRate: 30, label: 'Full HD 1080p' },
+  '4k': { width: 3840, height: 2160, frameRate: 30, label: '4K UHD' },
+};
 interface ChunkRow {
   index: number;
   sizeBytes: number;
@@ -72,6 +87,8 @@ export function App() {
 
   const [recording, setRecording] = useState(false);
   const [previewEnabled, setPreviewEnabled] = useState(true);
+  const [qualityPreset, setQualityPreset] = useState<QualityPreset>('auto');
+  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [chunks, setChunks] = useState<ChunkRow[]>([]);
   const [traces, setTraces] = useState<TraceRow[]>([]);
@@ -79,9 +96,11 @@ export function App() {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<ChunkedRecorder | null>(null);
   const sessionRef = useRef<string>('');
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recordingRef = useRef(false);
 
   const cleanRecipients = useMemo(() => sanitizeRecipients(emails), [emails]);
   const showTraces = (import.meta as unknown as { env: { DEV: boolean } }).env.DEV;
@@ -94,11 +113,28 @@ export function App() {
     if (typeof navigator === 'undefined' || typeof window === 'undefined') return false;
     const ua = navigator.userAgent.toLowerCase();
     const isTouch = navigator.maxTouchPoints > 1;
-    const minSide = Math.min(window.screen.width, window.screen.height);
-    const iPad = /ipad/.test(ua) || (ua.includes('macintosh') && isTouch);
-    const androidTablet = ua.includes('android') && !ua.includes('mobile');
-    const largeTouchDevice = isTouch && minSide >= 600;
-    return iPad || androidTablet || largeTouchDevice;
+    const isMobile = /android|iphone|ipad|ipod|mobile|phone/.test(ua) || isTouch;
+    return isMobile;
+  }, []);
+  const [videoOrientation, setVideoOrientation] = useState<'portrait' | 'landscape'>(
+    () => (typeof window !== 'undefined' && window.innerWidth > window.innerHeight ? 'landscape' : 'portrait'),
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    function updateOrientation() {
+      setVideoOrientation(window.innerWidth > window.innerHeight ? 'landscape' : 'portrait');
+    }
+
+    updateOrientation();
+    window.addEventListener('orientationchange', updateOrientation);
+    window.addEventListener('resize', updateOrientation);
+
+    return () => {
+      window.removeEventListener('orientationchange', updateOrientation);
+      window.removeEventListener('resize', updateOrientation);
+    };
   }, []);
 
   function addTrace(kind: TraceKind, message: string) {
@@ -154,10 +190,54 @@ export function App() {
     ? (driveReady ? `Google Drive connected (${storageState?.google.linkedEmail || 'account linked'})` : 'Google Drive selected, not linked yet')
     : 'Local storage active';
 
+  function getCameraVideoConstraints(): MediaTrackConstraints {
+    const isLandscape = videoOrientation === 'landscape';
+    const base: MediaTrackConstraints = deviceId
+      ? { deviceId: { exact: deviceId } }
+      : { facingMode: preferFrontCamera ? 'user' : 'environment' };
+
+    if (qualityPreset === 'auto') {
+      // Let the browser/device negotiate the best available resolution,
+      // but still hint orientation so the longer side matches the viewport.
+      return {
+        ...base,
+        aspectRatio: { ideal: isLandscape ? 16 / 9 : 9 / 16 },
+        frameRate: { ideal: 30 },
+      };
+    }
+
+    const preset = RESOLUTION_PRESETS[qualityPreset];
+    const longSide = Math.max(preset.width, preset.height);
+    const shortSide = Math.min(preset.width, preset.height);
+    const targetWidth = isLandscape ? longSide : shortSide;
+    const targetHeight = isLandscape ? shortSide : longSide;
+
+    return {
+      ...base,
+      width: { ideal: targetWidth, max: targetWidth },
+      height: { ideal: targetHeight, max: targetHeight },
+      aspectRatio: { ideal: targetWidth / targetHeight },
+      frameRate: { ideal: preset.frameRate, max: preset.frameRate },
+    };
+  }
+
   async function acquireStream(): Promise<MediaStream> {
     if (source === 'screen') {
+      const screenSpec = qualityPreset === 'auto' ? null : RESOLUTION_PRESETS[qualityPreset];
+      const isLandscape = videoOrientation === 'landscape';
+      const screenConstraints: MediaTrackConstraints = screenSpec
+        ? {
+            width: {
+              ideal: isLandscape ? Math.max(screenSpec.width, screenSpec.height) : Math.min(screenSpec.width, screenSpec.height),
+            },
+            height: {
+              ideal: isLandscape ? Math.min(screenSpec.width, screenSpec.height) : Math.max(screenSpec.width, screenSpec.height),
+            },
+            frameRate: { ideal: screenSpec.frameRate, max: screenSpec.frameRate },
+          }
+        : { frameRate: { ideal: 30 } };
       return await (navigator.mediaDevices as any).getDisplayMedia({
-        video: { frameRate: 30 },
+        video: screenConstraints,
         audio: true,
       });
     }
@@ -175,7 +255,7 @@ export function App() {
       return s;
     }
     return await navigator.mediaDevices.getUserMedia({
-      video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: preferFrontCamera ? 'user' : 'environment' },
+      video: getCameraVideoConstraints(),
       audio: true,
     });
   }
@@ -204,7 +284,7 @@ export function App() {
       }
 
       const previewStream = await navigator.mediaDevices.getUserMedia({
-        video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: preferFrontCamera ? 'user' : 'environment' },
+        video: getCameraVideoConstraints(),
         audio: false,
       });
       teardownStream();
@@ -222,17 +302,22 @@ export function App() {
     setChunks([]);
     setTraces([]);
     try {
-      teardownStream();
       if (!pickMimeType()) {
         setError('This browser has no compatible MediaRecorder codec. Try Chrome/Edge.');
         addTrace('error', 'No compatible MediaRecorder codec was found.');
         return;
       }
+      // Always acquire a fresh stream with audio for recording
       const stream = await acquireStream();
-      streamRef.current = stream;
+      recordingStreamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play().catch(() => undefined);
+      }
+      // Stop preview-only stream (it has no audio anyway)
+      if (streamRef.current && streamRef.current !== stream) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
       }
       sessionRef.current = uuid();
       addTrace('info', `Started session ${sessionRef.current}. Recipients: ${cleanRecipients.join(', ') || 'none'}`);
@@ -251,6 +336,7 @@ export function App() {
       recorderRef.current = rec;
       rec.start();
 
+      recordingRef.current = true;
       setRecording(true);
       addTrace('success', `Recording started. Auto-split set to ${splitMin} minutes.`);
       const t0 = Date.now();
@@ -265,16 +351,25 @@ export function App() {
 
   async function stop() {
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+    recordingRef.current = false;
     setRecording(false);
     addTrace('info', 'Stop requested by user. Final chunk will flush and upload.');
     try {
       await recorderRef.current?.stop();
     } finally {
-      teardownStream();
+      // Stop the recording stream
+      recordingStreamRef.current?.getTracks().forEach((t) => t.stop());
+      recordingStreamRef.current = null;
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+        videoRef.current.src = '';
+      }
     }
   }
 
   function teardownStream() {
+    // Never tear down a recording stream — only the preview stream
+    if (recordingRef.current) return;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     if (videoRef.current) {
@@ -284,11 +379,12 @@ export function App() {
   }
 
   useEffect(() => {
-    previewSource();
+    if (!recording) previewSource();
     return () => {
-      if (!recording) teardownStream();
+      // Use the ref (not the stale closure) to avoid killing a recording stream
+      if (!recordingRef.current) teardownStream();
     };
-  }, [source, deviceId, ipUrl, preferFrontCamera, recording, previewEnabled]);
+  }, [source, deviceId, ipUrl, preferFrontCamera, videoOrientation, qualityPreset, recording, previewEnabled]);
 
   async function handleChunk(chunk: ChunkPayload) {
     addTrace('info', `Chunk ${chunk.index + 1} captured (${(chunk.blob.size / (1024 * 1024)).toFixed(2)} MB).`);
@@ -297,8 +393,11 @@ export function App() {
       { index: chunk.index, sizeBytes: chunk.blob.size, state: 'uploading' },
     ]);
 
+
+    // Always default to 'recording' if label is empty or whitespace
+    const safeLabel = label.trim() ? label : 'recording';
     if (alsoSaveLocally) {
-      downloadChunkLocally(chunk, label || 'recording');
+      downloadChunkLocally(chunk, safeLabel);
       addTrace('success', `Chunk ${chunk.index + 1} saved locally in the browser.`);
     }
 
@@ -307,8 +406,10 @@ export function App() {
       const r = await uploadChunk(chunk, {
         sessionId: sessionRef.current,
         recipients: cleanRecipients,
-        label,
+        label: safeLabel,
         zip,
+        watermark: watermarkEnabled,
+        qualityPreset,
       });
       addTrace(
         r.mailStatus === 'sent' ? 'success' : 'warn',
@@ -435,7 +536,7 @@ export function App() {
 
   return (
     <div className="app">
-      <h1>StudioCam</h1>
+      <h1>Lemon Hub Studio Cam</h1>
       <p className="subtitle">
         Record from your camera, screen or an IP cam — auto-split every {splitMin} min
         and email up to {MAX_RECIPIENTS} recipients.
@@ -485,6 +586,29 @@ export function App() {
 
       <section className="panel">
         <video ref={videoRef} muted playsInline />
+              <div style={{ marginTop: 10, width: '100%' }}>
+                <input
+                  value={label}
+                  disabled={recording}
+                  onChange={e => setLabel(e.target.value)}
+                  placeholder="Name your song…"
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    fontSize: 15,
+                    borderRadius: 10,
+                    border: '1px solid #b0b0b0',
+                    background: '#fff',
+                    color: '#222',
+                    textAlign: 'center',
+                    letterSpacing: 0.3,
+                    boxShadow: '0 1px 4px 0 rgba(0,0,0,0.03)',
+                    outline: 'none',
+                  }}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </div>
               <div
                 style={{
                   display: "flex",
@@ -741,7 +865,7 @@ export function App() {
                       background: 'rgba(45,108,223,0.12)',
                     }}
                   >
-                    {preferFrontCamera ? 'Tablet detected: default front camera' : 'Phone/Desktop detected: default back camera'}
+                    {preferFrontCamera ? 'Mobile detected: default front camera' : 'Desktop detected: default back camera'}
                   </span>
                 </div>
                 <div className="row">
@@ -759,7 +883,7 @@ export function App() {
                       <label>Camera device</label>
                       <select value={deviceId} disabled={recording}
                         onChange={(e) => setDeviceId(e.target.value)}>
-                        <option value="">Default ({preferFrontCamera ? 'front on tablets' : 'back on phones/desktops'})</option>
+                        <option value="">Default ({preferFrontCamera ? 'front on mobile' : 'back on desktop'})</option>
                         {cameras.map((c) => (
                           <option key={c.deviceId} value={c.deviceId}>
                             {c.label || `Camera ${c.deviceId.slice(0, 6)}`}
@@ -772,10 +896,26 @@ export function App() {
 
                 <div className="row" style={{ marginTop: 10 }}>
                   <div>
-                    <label>Name Your Song</label>
-                    <input value={label} disabled={recording}
-                      onChange={(e) => setLabel(e.target.value)} />
+                    <label>Resolution</label>
+                    <select
+                      value={qualityPreset}
+                      disabled={recording}
+                      onChange={(e) => setQualityPreset(e.target.value as QualityPreset)}
+                    >
+                      <option value="auto">Auto (device best)</option>
+                      <option value="480p">SD 480p (854 × 480)</option>
+                      <option value="720p">HD 720p (1280 × 720)</option>
+                      <option value="1080p">Full HD 1080p (1920 × 1080)</option>
+                      <option value="4k">4K UHD (3840 × 2160)</option>
+                    </select>
                   </div>
+                  <div className="muted" style={{ alignSelf: 'flex-end', maxWidth: 320 }}>
+                    Constraints are sent as <code>ideal</code>, so the device picks the closest match.
+                    Width/height swap automatically when the screen rotates.
+                  </div>
+                </div>
+
+                <div className="row" style={{ marginTop: 10 }}>
                   <div>
                     <label>Auto-split (min)</label>
                     <input type="number" min={1} max={60} value={splitMin}
@@ -793,7 +933,18 @@ export function App() {
                     <input type="checkbox" checked={alsoSaveLocally} disabled={recording}
                       onChange={(e) => setAlsoSaveLocally(e.target.checked)} /> Also download locally (backup)
                   </label>
+                  <label style={{ display: 'flex', gap: 6, alignItems: 'center', margin: 0 }}>
+                    <input type="checkbox" checked={watermarkEnabled} disabled={recording}
+                      onChange={(e) => setWatermarkEnabled(e.target.checked)} /> Apply watermark in post-processing
+                  </label>
                 </div>
+
+                {watermarkEnabled && (
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    Watermark will be composited onto uploaded chunks by the backend post-processing pipeline.
+                    Drop your image at <code>apps/backend/assets/watermark.png</code> (a placeholder file is included).
+                  </div>
+                )}
 
                 {source === 'ipcam' && (
                   <div className="row" style={{ marginTop: 8 }}>
@@ -811,7 +962,7 @@ export function App() {
                 )}
 
                 <div className="muted" style={{ marginTop: 10 }}>
-                  Default camera behavior: tablets prefer front camera; phones/desktops use environment/back camera unless you select a specific device.
+                  Default camera behavior: mobile devices use front camera; desktops use environment/back camera unless you select a specific device. Video orientation follows device rotation.
                 </div>
               </div>
             )}
