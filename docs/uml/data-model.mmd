@@ -1,0 +1,49 @@
+classDiagram
+  class RecordingSession {
+    +string sessionId
+    +string[] recipients  %% max 3
+    +string? label
+    +number maxChunkSeconds
+    +string startedAt
+  }
+
+  class RecordingChunkMeta {
+    +string sessionId
+    +number chunkIndex
+    +string startedAt
+    +string endedAt
+    +string mimeType
+    +number sizeBytes
+    +bool? zipped
+  }
+
+  class UploadResult {
+    +string driveFileId
+    +string driveWebViewLink
+    +string driveDownloadLink
+    +string[] emailedTo
+  }
+
+  class CameraSource {
+    <<union>>
+    +device(deviceId, facingMode)
+    +screen()
+    +ipcam(url)
+  }
+
+  class RecordingRow {
+    +string id
+    +string session_id
+    +number chunk_index
+    +string drive_file_id
+    +string drive_link
+    +string recipients  %% JSON array
+    +number size_bytes
+    +string mime_type
+    +string created_at
+  }
+
+  RecordingSession "1" --> "1..*" RecordingChunkMeta : produces
+  RecordingChunkMeta "1" --> "1" UploadResult : becomes
+  UploadResult "1" --> "1" RecordingRow : persisted as
+  RecordingSession --> CameraSource : uses

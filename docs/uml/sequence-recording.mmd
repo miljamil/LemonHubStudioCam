@@ -1,0 +1,28 @@
+sequenceDiagram
+  autonumber
+  actor U as Operator
+  participant C as Client (web / mobile)
+  participant R as ChunkedRecorder
+  participant B as Backend (Express)
+  participant G as Google Drive
+  participant M as SMTP
+  actor E as Recipients (≤ 3)
+
+  U->>C: enter up to 3 emails
+  U->>C: press Record
+  C->>R: start(stream, maxChunkSeconds=1800)
+  loop every ≤ 30 min
+    R-->>R: MediaRecorder fills buffer
+    Note over R: timer fires OR user stops
+    R->>C: onChunk(blob, index)
+    C->>B: POST /api/recordings (multipart)
+    B->>G: files.create + permissions.create(anyone:reader)
+    G-->>B: {fileId, webViewLink}
+    B->>M: sendMail(to: recipients, link)
+    M-->>E: email with Drive link
+    B-->>C: {driveWebViewLink, emailedTo}
+  end
+  U->>C: press Stop
+  C->>R: stop()
+  R-->>C: final onChunk(...)
+  Note over C,B: same upload+email path as above

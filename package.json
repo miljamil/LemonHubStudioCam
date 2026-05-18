@@ -1,0 +1,27 @@
+{
+  "name": "studiocam",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Multi-platform recorder (web, mobile, desktop) that saves to Google Drive and emails the video.",
+  "workspaces": [
+    "packages/*",
+    "apps/web",
+    "apps/backend",
+    "apps/desktop"
+  ],
+  "scripts": {
+    "build:shared": "npm --workspace @studiocam/shared run build",
+    "dev:web": "npm --workspace @studiocam/web run dev",
+    "dev:backend": "npm --workspace @studiocam/backend run dev",
+    "dev:desktop": "npm --workspace @studiocam/desktop run dev",
+    "dev:mobile": "cd apps/mobile && npx expo start",
+    "build": "npm run build:shared && npm --workspace @studiocam/web run build && npm --workspace @studiocam/backend run build",
+    "lint": "echo \"Add eslint per workspace as needed\""
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=18.18"
+  }
+}

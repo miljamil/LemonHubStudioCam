@@ -1,0 +1,16 @@
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Acquiring : start()
+  Acquiring --> Recording : getUserMedia / getDisplayMedia OK
+  Acquiring --> Error : permission denied / no codec
+
+  Recording --> Rotating : timer fires (maxChunkSeconds)
+  Rotating --> Recording : new MediaRecorder spawned
+  Rotating --> Emitting : onstop fires
+
+  Recording --> Stopping : stop()
+  Stopping --> Emitting : onstop fires
+  Emitting --> Uploading : onChunk(blob)
+  Uploading --> Idle : POST /api/recordings OK
+  Uploading --> Error : network / 5xx
+  Error --> Idle : user dismisses

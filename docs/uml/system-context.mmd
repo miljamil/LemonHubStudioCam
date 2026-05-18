@@ -1,0 +1,19 @@
+C4Context
+  title StudioCam — System context
+
+  Person(operator, "Operator", "Starts/stops recordings on a tablet, phone, or laptop")
+  Person(viewer, "Recipient (≤ 3)", "Receives an email with a link to the recording")
+  Person(owner, "Business owner", "One-time Google sign-in; owns the Drive storage")
+
+  System(studio, "StudioCam", "Records video, uploads to Drive, emails a link")
+
+  System_Ext(drive, "Google Drive", "Stores video files on the business owner's account")
+  System_Ext(smtp, "SMTP provider", "Delivers email (Gmail / SendGrid / etc.)")
+  System_Ext(ipcam, "IP camera (HLS/MJPEG)", "Optional video source")
+
+  Rel(operator, studio, "Records, manages recipients")
+  Rel(owner, studio, "Grants Drive access once (OAuth)")
+  Rel(studio, drive, "Uploads chunks, sets link-share permission")
+  Rel(studio, smtp, "Sends emails with shareable links")
+  Rel(smtp, viewer, "Delivers email with link")
+  Rel(ipcam, studio, "Streams video (optional)")

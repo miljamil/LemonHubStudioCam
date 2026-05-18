@@ -1,0 +1,36 @@
+flowchart LR
+  subgraph Clients
+    direction TB
+    Web["apps/web<br/>Vite + React + TS<br/>MediaRecorder"]
+    Mobile["apps/mobile<br/>Expo / React Native<br/>expo-camera"]
+    Desktop["apps/desktop<br/>Electron shell"]
+  end
+
+  Shared[("packages/shared<br/>types · validators · constants")]
+
+  subgraph Backend["apps/backend (Node + Express + TS)"]
+    direction TB
+    Server["server.ts<br/>REST API"]
+    Drive["drive.ts<br/>googleapis"]
+    Mailer["mailer.ts<br/>nodemailer"]
+    DB[("db.ts<br/>SQLite (better-sqlite3)")]
+    Config["config.ts<br/>dotenv"]
+  end
+
+  GDrive[(Google Drive<br/>owner account)]
+  SMTP[(SMTP provider)]
+
+  Web --> Shared
+  Mobile --> Shared
+  Desktop --> Web
+
+  Web -- "POST /api/recordings\n(multipart chunk)" --> Server
+  Mobile -- "POST /api/recordings" --> Server
+
+  Server --> Drive
+  Server --> Mailer
+  Server --> DB
+  Server --> Config
+
+  Drive -- "files.create + permissions.create" --> GDrive
+  Mailer -- "SMTP" --> SMTP

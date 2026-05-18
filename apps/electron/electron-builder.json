@@ -1,0 +1,13 @@
+{
+  "appId": "com.studiocam.app",
+  "productName": "StudioCam",
+  "directories": {
+    "output": "dist"
+  },
+  "files": [
+    "**/*"
+  ],
+  "mac": {
+    "target": "dmg"
+  }
+}

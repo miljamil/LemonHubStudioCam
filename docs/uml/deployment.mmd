@@ -1,0 +1,26 @@
+flowchart TB
+  subgraph User devices
+    iPad["iPad / iPhone<br/>Expo Go or built IPA"]
+    Android["Android phone/tablet<br/>Expo Go or APK"]
+    Browser["Any modern browser<br/>(Chrome / Edge / Safari)"]
+    Mac["Mac / Windows / Linux<br/>Electron app (V2)"]
+  end
+
+  subgraph Self-hosted ("Single VM / Raspberry Pi / Fly.io")
+    direction LR
+    BE["@studiocam/backend<br/>Node 18 + Express"]
+    SQLite[(SQLite file<br/>data/studiocam.sqlite)]
+    BE --- SQLite
+  end
+
+  subgraph Third-party (free tier)
+    GDrive[(Google Drive — 15 GB)]
+    Gmail[(Gmail SMTP)]
+  end
+
+  iPad -- HTTPS --> BE
+  Android -- HTTPS --> BE
+  Browser -- HTTPS --> BE
+  Mac -- HTTPS --> BE
+  BE -- OAuth + REST --> GDrive
+  BE -- SMTPS:465 --> Gmail

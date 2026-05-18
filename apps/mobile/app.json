@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "StudioCam",
+    "slug": "studiocam",
+    "version": "0.1.0",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.studiocam.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "StudioCam needs camera access to record video.",
+        "NSMicrophoneUsageDescription": "StudioCam needs microphone access to record audio.",
+        "NSPhotoLibraryAddUsageDescription": "StudioCam saves recordings to your photo library."
+      }
+    },
+    "android": {
+      "package": "com.studiocam.app",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": ["expo-camera", "expo-media-library"],
+    "extra": {
+      "backendUrl": "http://10.0.2.2:4000"
+    }
+  }
+}
