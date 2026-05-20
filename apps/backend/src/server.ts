@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { z } from 'zod';
 import { sanitizeRecipients, MAX_RECIPIENTS } from '@studiocam/shared';
@@ -50,61 +51,41 @@ app.get('/api/health', (_req, res) => {
 });
 
 // ----- Watermark post-processing -----
+let ffmpegStaticLoadError: string | null = null;
 const ffmpegStaticPath = (() => {
   try {
     const mod = runtimeRequire('ffmpeg-static') as string | { default?: string | null } | null;
     if (typeof mod === 'string') return mod;
     return mod?.default ?? null;
   } catch (err) {
-    console.warn('[studiocam][postprocess:watermark] ffmpeg-static load failed', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    ffmpegStaticLoadError = err instanceof Error ? err.message : String(err);
     return null;
   }
 })();
 
-const Ffmpeg = (() => {
-  try {
-    const mod = runtimeRequire('fluent-ffmpeg') as {
-      default?: {
-        (input?: string): {
-          input(inputPath: string): any;
-          complexFilter(filters: string | string[]): any;
-          outputOptions(options: string[]): any;
-          output(outputPath: string): any;
-          on(event: 'end', listener: () => void): any;
-          on(event: 'error', listener: (err: unknown) => void): any;
-          run(): void;
-        };
-        setFfmpegPath(path: string): void;
-      };
-      (input?: string): {
-        input(inputPath: string): any;
-        complexFilter(filters: string | string[]): any;
-        outputOptions(options: string[]): any;
-        output(outputPath: string): any;
-        on(event: 'end', listener: () => void): any;
-        on(event: 'error', listener: (err: unknown) => void): any;
-        run(): void;
-      };
-      setFfmpegPath(path: string): void;
-    };
-    return (mod.default ?? mod) || null;
-  } catch (err) {
-    console.warn('[studiocam][postprocess:watermark] fluent-ffmpeg load failed', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
+const ffmpegBinaryPath = (() => {
+  const envPath = process.env.FFMPEG_PATH?.trim();
+  if (envPath) {
+    return envPath;
   }
+  if (ffmpegStaticPath) {
+    return ffmpegStaticPath;
+  }
+  const probe = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' });
+  if (probe.status === 0) {
+    return 'ffmpeg';
+  }
+  return null;
 })();
 
-if (Ffmpeg && ffmpegStaticPath) {
-  Ffmpeg.setFfmpegPath(ffmpegStaticPath);
+if (ffmpegBinaryPath) {
   console.info('[studiocam][postprocess:watermark] ffmpeg enabled', {
-    ffmpegPath: ffmpegStaticPath,
+    ffmpegPath: ffmpegBinaryPath,
   });
 } else {
-  console.warn('[studiocam][postprocess:watermark] ffmpeg module or binary not available; watermark will be skipped.');
+  console.warn('[studiocam][postprocess:watermark] no ffmpeg binary found (FFMPEG_PATH, ffmpeg-static, or system ffmpeg); watermark will be skipped.', {
+    ffmpegStaticLoadError,
+  });
 }
 
 const WATERMARK_ASSET_PATH = path.resolve(__dirname, '../assets/watermark.png');
@@ -118,7 +99,7 @@ const WATERMARK_ASSET_PATH = path.resolve(__dirname, '../assets/watermark.png');
  * most 20 % of the video width while preserving its aspect ratio.
  */
 async function applyWatermark(buffer: Buffer, mimeType: string, traceId: string): Promise<Buffer> {
-  if (!Ffmpeg || !ffmpegStaticPath) {
+  if (!ffmpegBinaryPath) {
     console.warn('[studiocam][postprocess:watermark] ffmpeg unavailable, skipping', {
       traceId,
     });
@@ -151,19 +132,29 @@ async function applyWatermark(buffer: Buffer, mimeType: string, traceId: string)
 
   try {
     await new Promise<void>((resolve, reject) => {
-      Ffmpeg(inPath)
-        .input(WATERMARK_ASSET_PATH)
-        // Overlay watermark at bottom-right with 16px padding.
-        // Scale watermark to 15% of main video height, preserving aspect ratio.
-        .complexFilter(
-          '[1:v][0:v]scale2ref=oh*mdar:ih*0.15[wm][vid];[vid][wm]overlay=W-w-16:H-h-16'
-        )
-        // Copy audio without re-encoding.
-        .outputOptions(['-c:a', 'copy', '-map', '0:a?'])
-        .output(outPath)
-        .on('end', () => resolve())
-        .on('error', (err: unknown) => reject(err))
-        .run();
+      const args = [
+        '-y',
+        '-i', inPath,
+        '-i', WATERMARK_ASSET_PATH,
+        '-filter_complex', '[1:v][0:v]scale2ref=oh*mdar:ih*0.15[wm][vid];[vid][wm]overlay=W-w-16:H-h-16',
+        '-c:a', 'copy',
+        '-map', '0:a?',
+        outPath,
+      ];
+      const proc = spawn(ffmpegBinaryPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      proc.stderr.on('data', (chunk: Buffer | string) => {
+        stderr += chunk.toString();
+      });
+      proc.on('error', (err) => reject(err));
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        const tail = stderr.length > 1200 ? stderr.slice(-1200) : stderr;
+        reject(new Error(`ffmpeg exited with code ${code}. ${tail}`));
+      });
     });
 
     const result = await fs.promises.readFile(outPath);
