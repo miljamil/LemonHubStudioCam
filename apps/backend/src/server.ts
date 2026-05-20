@@ -92,7 +92,7 @@ async function applyWatermark(buffer: Buffer, mimeType: string, traceId: string)
         .outputOptions(['-c:a', 'copy', '-map', '0:a?'])
         .output(outPath)
         .on('end', () => resolve())
-        .on('error', (err) => reject(err))
+        .on('error', (err: unknown) => reject(err))
         .run();
     });
 
