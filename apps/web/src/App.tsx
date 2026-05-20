@@ -4,6 +4,7 @@ import {
   MAX_RECIPIENTS,
   sanitizeRecipients,
 } from '@studiocam/shared';
+import { apiUrl } from './api.js';
 import { ChunkedRecorder, pickMimeType, type ChunkPayload } from './recorder.js';
 import { downloadChunkLocally, uploadChunk } from './uploader.js';
 
@@ -163,7 +164,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    fetch('/api/storage/settings')
+    fetch(apiUrl('/api/storage/settings'))
       .then((res) => res.json())
       .then((data: StorageState) => {
         setStorageState(data);
@@ -173,7 +174,7 @@ export function App() {
       })
       .catch((e) => addTrace('warn', `Could not load storage settings: ${(e as Error).message}`));
     // Load SMTP settings too
-    fetch('/api/smtp/settings')
+    fetch(apiUrl('/api/smtp/settings'))
       .then((res) => res.json())
       .then((data: { host?: string; port?: number; secure?: boolean; user?: string }) => {
         if (data.host) setSmtpHost(data.host);
@@ -433,7 +434,7 @@ export function App() {
   async function saveStorageSettings() {
     setError(null);
     try {
-      const res = await fetch('/api/storage/settings', {
+      const res = await fetch(apiUrl('/api/storage/settings'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -464,7 +465,7 @@ export function App() {
         throw new Error('Enter a valid Google email first.');
       }
 
-      const res = await fetch('/api/auth/google/start', {
+      const res = await fetch(apiUrl('/api/auth/google/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
@@ -492,7 +493,7 @@ export function App() {
         ? smtpPass.replace(/\s+/g, '')
         : smtpPass;
 
-      const res = await fetch('/api/smtp/settings', {
+      const res = await fetch(apiUrl('/api/smtp/settings'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -524,7 +525,7 @@ export function App() {
   async function disconnectSmtp() {
     setError(null);
     try {
-      await fetch('/api/smtp/settings', { method: 'DELETE' });
+      await fetch(apiUrl('/api/smtp/settings'), { method: 'DELETE' });
       setStorageState((prev) => prev ? { ...prev, smtpLinked: false, smtpLinkedEmail: '' } : prev);
       setSmtpUser('');
       setSmtpPass('');
