@@ -136,7 +136,9 @@ async function applyWatermark(buffer: Buffer, mimeType: string, traceId: string)
         '-y',
         '-i', inPath,
         '-i', WATERMARK_ASSET_PATH,
-        '-filter_complex', '[1:v][0:v]scale2ref=oh*mdar:ih*0.15[wm][vid];[vid][wm]overlay=W-w-16:H-h-16',
+        // Label final overlay output and map it explicitly so ffmpeg cannot fall back to original video.
+        '-filter_complex', '[1:v][0:v]scale2ref=oh*mdar:ih*0.15[wm][vid];[vid][wm]overlay=W-w-16:H-h-16[vout]',
+        '-map', '[vout]',
         '-c:a', 'copy',
         '-map', '0:a?',
         outPath,
