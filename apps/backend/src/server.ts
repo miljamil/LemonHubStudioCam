@@ -22,6 +22,14 @@ import {
 } from './storage-settings.js';
 
 const app = express();
+
+// Increase timeouts for large uploads on slower connections (e.g., Render free tier)
+app.use((req, res, next) => {
+  req.socket.setTimeout(5 * 60 * 1000); // 5 minutes for socket
+  res.setTimeout(5 * 60 * 1000); // 5 minutes for response
+  next();
+});
+
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 app.use(
