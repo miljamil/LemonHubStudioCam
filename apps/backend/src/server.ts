@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import { z } from 'zod';
 import { sanitizeRecipients, MAX_RECIPIENTS } from '@studiocam/shared';
 import { config } from './config.js';
@@ -22,6 +23,7 @@ import {
 } from './storage-settings.js';
 
 const app = express();
+const runtimeRequire = createRequire(__filename);
 
 // Increase timeouts for large uploads on slower connections (e.g., Render free tier)
 app.use((req, res, next) => {
@@ -50,15 +52,32 @@ app.get('/api/health', (_req, res) => {
 // ----- Watermark post-processing -----
 const ffmpegStaticPath = (() => {
   try {
-    return require('ffmpeg-static') as string | null;
-  } catch {
+    const mod = runtimeRequire('ffmpeg-static') as string | { default?: string | null } | null;
+    if (typeof mod === 'string') return mod;
+    return mod?.default ?? null;
+  } catch (err) {
+    console.warn('[studiocam][postprocess:watermark] ffmpeg-static load failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return null;
   }
 })();
 
 const Ffmpeg = (() => {
   try {
-    return require('fluent-ffmpeg') as {
+    const mod = runtimeRequire('fluent-ffmpeg') as {
+      default?: {
+        (input?: string): {
+          input(inputPath: string): any;
+          complexFilter(filters: string | string[]): any;
+          outputOptions(options: string[]): any;
+          output(outputPath: string): any;
+          on(event: 'end', listener: () => void): any;
+          on(event: 'error', listener: (err: unknown) => void): any;
+          run(): void;
+        };
+        setFfmpegPath(path: string): void;
+      };
       (input?: string): {
         input(inputPath: string): any;
         complexFilter(filters: string | string[]): any;
@@ -70,13 +89,20 @@ const Ffmpeg = (() => {
       };
       setFfmpegPath(path: string): void;
     };
-  } catch {
+    return (mod.default ?? mod) || null;
+  } catch (err) {
+    console.warn('[studiocam][postprocess:watermark] fluent-ffmpeg load failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return null;
   }
 })();
 
 if (Ffmpeg && ffmpegStaticPath) {
   Ffmpeg.setFfmpegPath(ffmpegStaticPath);
+  console.info('[studiocam][postprocess:watermark] ffmpeg enabled', {
+    ffmpegPath: ffmpegStaticPath,
+  });
 } else {
   console.warn('[studiocam][postprocess:watermark] ffmpeg module or binary not available; watermark will be skipped.');
 }
