@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { apiUrl } from './api.js';
 import type { ChunkPayload } from './recorder.js';
 
 export interface UploadOpts {
@@ -57,7 +58,7 @@ export async function uploadChunk(
   if (opts.watermark) form.append('watermark', '1');
   if (opts.qualityPreset) form.append('qualityPreset', opts.qualityPreset);
 
-  const res = await fetch('/api/recordings', { method: 'POST', body: form });
+  const res = await fetch(apiUrl('/api/recordings'), { method: 'POST', body: form });
   if (!res.ok) {
     const text = await res.text();
     console.error(tracePrefix, 'upload failed', { status: res.status, text });
