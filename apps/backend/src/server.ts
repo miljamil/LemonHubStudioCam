@@ -6,8 +6,6 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { z } from 'zod';
-import ffmpegStatic from 'ffmpeg-static';
-import Ffmpeg from 'fluent-ffmpeg';
 import { sanitizeRecipients, MAX_RECIPIENTS } from '@studiocam/shared';
 import { config } from './config.js';
 import { db } from './db.js';
@@ -42,7 +40,38 @@ app.get('/api/health', (_req, res) => {
 });
 
 // ----- Watermark post-processing -----
-if (ffmpegStatic) Ffmpeg.setFfmpegPath(ffmpegStatic);
+const ffmpegStaticPath = (() => {
+  try {
+    return require('ffmpeg-static') as string | null;
+  } catch {
+    return null;
+  }
+})();
+
+const Ffmpeg = (() => {
+  try {
+    return require('fluent-ffmpeg') as {
+      (input?: string): {
+        input(inputPath: string): any;
+        complexFilter(filters: string | string[]): any;
+        outputOptions(options: string[]): any;
+        output(outputPath: string): any;
+        on(event: 'end', listener: () => void): any;
+        on(event: 'error', listener: (err: unknown) => void): any;
+        run(): void;
+      };
+      setFfmpegPath(path: string): void;
+    };
+  } catch {
+    return null;
+  }
+})();
+
+if (Ffmpeg && ffmpegStaticPath) {
+  Ffmpeg.setFfmpegPath(ffmpegStaticPath);
+} else {
+  console.warn('[studiocam][postprocess:watermark] ffmpeg module or binary not available; watermark will be skipped.');
+}
 
 const WATERMARK_ASSET_PATH = path.resolve(__dirname, '../assets/watermark.png');
 
@@ -55,6 +84,13 @@ const WATERMARK_ASSET_PATH = path.resolve(__dirname, '../assets/watermark.png');
  * most 20 % of the video width while preserving its aspect ratio.
  */
 async function applyWatermark(buffer: Buffer, mimeType: string, traceId: string): Promise<Buffer> {
+  if (!Ffmpeg || !ffmpegStaticPath) {
+    console.warn('[studiocam][postprocess:watermark] ffmpeg unavailable, skipping', {
+      traceId,
+    });
+    return buffer;
+  }
+
   console.info('[studiocam][postprocess:watermark] starting', {
     traceId,
     assetPath: WATERMARK_ASSET_PATH,
