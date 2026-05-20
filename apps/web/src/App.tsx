@@ -8,6 +8,7 @@ import { apiUrl } from './api.js';
 import { ChunkedRecorder, pickMimeType, type ChunkPayload } from './recorder.js';
 import {
   buildMailtoDraft,
+  deleteRecording,
   downloadChunkLocally,
   resendRecordingEmail,
   uploadChunk,
@@ -539,6 +540,30 @@ export function App() {
         ),
       );
     }
+  }
+
+  async function deleteChunkRecording(index: number) {
+    const row = chunks.find((c) => c.index === index);
+    if (!row?.recordingId) {
+      addTrace('warn', `Cannot delete chunk ${index + 1}: no recording id yet.`);
+      return;
+    }
+    const confirmed = window.confirm(`Delete part ${index + 1} from backend storage? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setChunks((prev) => prev.map((c) => (c.index === index ? { ...c, busy: true } : c)));
+    const result = await deleteRecording(row.recordingId);
+    if (!result.ok) {
+      addTrace('error', `Delete failed for chunk ${index + 1}: ${result.error ?? 'unknown'}`);
+      setChunks((prev) => prev.map((c) => (c.index === index ? { ...c, busy: false } : c)));
+      return;
+    }
+
+    addTrace(
+      'success',
+      `Chunk ${index + 1} deleted from backend.` + (result.note ? ` ${result.note}` : ''),
+    );
+    setChunks((prev) => prev.filter((c) => c.index !== index));
   }
 
   function openMailDraftFor(index: number) {
@@ -1154,6 +1179,11 @@ export function App() {
                     {c.recordingId && (c.mailStatus === 'failed' || c.mailStatus === 'skipped-smtp') && smtpReady && (
                       <button type="button" disabled={c.busy} onClick={() => resendChunkEmail(c.index)}>
                         Resend email
+                      </button>
+                    )}
+                    {c.recordingId && (
+                      <button type="button" disabled={c.busy} onClick={() => deleteChunkRecording(c.index)}>
+                        Delete
                       </button>
                     )}
                     {c.link && (

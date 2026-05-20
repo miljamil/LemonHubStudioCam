@@ -123,6 +123,29 @@ export async function resendRecordingEmail(
   return data as { mailStatus: MailStatus; recipients?: string[]; traceId?: string };
 }
 
+/** Delete a previously uploaded recording and its local file (when stored locally). */
+export async function deleteRecording(recordingId: string): Promise<{
+  ok: boolean;
+  error?: string;
+  traceId?: string;
+  fileDeleted?: boolean;
+  note?: string;
+}> {
+  const res = await fetch(apiUrl(`/api/recordings/${encodeURIComponent(recordingId)}`), {
+    method: 'DELETE',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { ok: false, error: data?.error || `HTTP ${res.status}`, traceId: data?.traceId };
+  }
+  return {
+    ok: true,
+    traceId: data?.traceId,
+    fileDeleted: Boolean(data?.fileDeleted),
+    note: typeof data?.note === 'string' ? data.note : undefined,
+  };
+}
+
 /** Build a mailto: URL the user's mail client opens as a draft. */
 export function buildMailtoDraft(input: {
   recipients: string[];

@@ -7,6 +7,10 @@ function createTransport(smtp: SmtpSettings) {
     port: smtp.port,
     secure: smtp.secure,
     auth: { user: smtp.user, pass: smtp.pass },
+    // Render/free-tier cold starts can delay SMTP handshakes.
+    connectionTimeout: 30_000,
+    greetingTimeout: 30_000,
+    socketTimeout: 60_000,
   });
 }
 

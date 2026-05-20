@@ -626,6 +626,72 @@ app.post('/api/recordings/:id/resend-email', async (req, res, next) => {
   }
 });
 
+// ---------- Delete a recording (and local file when applicable) ----------
+app.delete('/api/recordings/:id', async (req, res, next) => {
+  const traceId = crypto.randomUUID();
+  const id = req.params.id;
+  try {
+    const stmt = db.prepare(
+      `SELECT id, drive_file_id, storage_kind FROM recordings WHERE id = ?`,
+    ) as unknown as {
+      get: (id: string) => {
+        id: string;
+        drive_file_id: string;
+        storage_kind: 'local' | 'google-drive' | null;
+      } | undefined;
+    };
+    const row = stmt.get(id);
+    if (!row) return res.status(404).json({ error: 'recording not found' });
+
+    let fileDeleted = false;
+    let note: string | undefined;
+
+    if ((row.storage_kind ?? 'local') === 'local') {
+      const localDir = path.resolve(process.cwd(), config.localStorageDir);
+      const candidatePath = path.resolve(localDir, row.drive_file_id);
+      const inLocalDir = candidatePath === localDir || candidatePath.startsWith(`${localDir}${path.sep}`);
+      if (!inLocalDir) {
+        return res.status(400).json({ error: 'invalid file path for local recording' });
+      }
+
+      try {
+        await fs.promises.unlink(candidatePath);
+        fileDeleted = true;
+      } catch (e) {
+        const err = e as NodeJS.ErrnoException;
+        if (err.code === 'ENOENT') {
+          // File already missing is fine; continue to clean DB row.
+          note = 'File was already missing from disk; database entry removed.';
+        } else {
+          throw e;
+        }
+      }
+    } else {
+      // Google Drive delete is not implemented yet in this endpoint.
+      note = 'Database entry removed; cloud file deletion is not implemented for this storage type.';
+    }
+
+    db.prepare(`DELETE FROM recordings WHERE id = ?`).run(id);
+    console.info('[studiocam][recording:delete]', {
+      traceId,
+      id,
+      storageKind: row.storage_kind ?? 'local',
+      fileDeleted,
+      note,
+    });
+    res.json({
+      ok: true,
+      traceId,
+      deletedId: id,
+      storageKind: row.storage_kind ?? 'local',
+      fileDeleted,
+      note,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
 // ---------- List recent recordings (for a future multi-device dashboard) ----------
 app.get('/api/recordings', (req, res) => {
   const sessionId = req.query.sessionId ? String(req.query.sessionId) : null;
