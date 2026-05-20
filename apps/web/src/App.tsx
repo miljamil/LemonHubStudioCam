@@ -6,7 +6,13 @@ import {
 } from '@studiocam/shared';
 import { apiUrl } from './api.js';
 import { ChunkedRecorder, pickMimeType, type ChunkPayload } from './recorder.js';
-import { downloadChunkLocally, uploadChunk } from './uploader.js';
+import {
+  buildMailtoDraft,
+  downloadChunkLocally,
+  resendRecordingEmail,
+  uploadChunk,
+  type MailStatus,
+} from './uploader.js';
 
 type SourceKind = 'camera' | 'screen' | 'ipcam';
 type StorageMode = 'local' | 'google-drive';
@@ -31,8 +37,27 @@ interface ChunkRow {
   index: number;
   sizeBytes: number;
   state: ChunkState;
+  /** Server-assigned recording id (present after first successful upload). */
+  recordingId?: string;
+  /** View link for the stored file. */
   link?: string;
+  /** Direct download link. */
+  downloadLink?: string;
+  /** Filename the backend stored it as. */
+  filename?: string;
+  /** Email delivery state. */
+  mailStatus?: MailStatus;
+  mailError?: string;
+  /** Recipients last attempted. */
+  recipients?: string[];
+  /** Upload error message. */
   error?: string;
+  /** Attempt counter shown during retries. */
+  attemptInfo?: string;
+  /** Kept in memory so the user can retry upload or download manually if upload failed. */
+  payload?: ChunkPayload;
+  /** True while a manual retry/resend is running. */
+  busy?: boolean;
 }
 
 interface TraceRow {
@@ -391,7 +416,13 @@ export function App() {
     addTrace('info', `Chunk ${chunk.index + 1} captured (${(chunk.blob.size / (1024 * 1024)).toFixed(2)} MB).`);
     setChunks((prev) => [
       ...prev,
-      { index: chunk.index, sizeBytes: chunk.blob.size, state: 'uploading' },
+      {
+        index: chunk.index,
+        sizeBytes: chunk.blob.size,
+        state: 'uploading',
+        payload: chunk,
+        recipients: cleanRecipients,
+      },
     ]);
 
 
@@ -402,6 +433,10 @@ export function App() {
       addTrace('success', `Chunk ${chunk.index + 1} saved locally in the browser.`);
     }
 
+    await runUpload(chunk, safeLabel);
+  }
+
+  async function runUpload(chunk: ChunkPayload, safeLabel: string) {
     try {
       addTrace('info', `Chunk ${chunk.index + 1} upload started with ${cleanRecipients.length} recipient(s).`);
       const r = await uploadChunk(chunk, {
@@ -411,24 +446,128 @@ export function App() {
         zip,
         watermark: watermarkEnabled,
         qualityPreset,
+        onAttempt: ({ attempt, maxAttempts, error, nextDelayMs }) => {
+          addTrace(
+            'warn',
+            `Chunk ${chunk.index + 1} attempt ${attempt}/${maxAttempts} failed: ${error.message}. Retrying in ${Math.round(nextDelayMs / 1000)}s.`,
+          );
+          setChunks((prev) =>
+            prev.map((c) =>
+              c.index === chunk.index
+                ? { ...c, attemptInfo: `retrying ${attempt + 1}/${maxAttempts} in ${Math.round(nextDelayMs / 1000)}s` }
+                : c,
+            ),
+          );
+        },
       });
       addTrace(
         r.mailStatus === 'sent' ? 'success' : 'warn',
-        `Chunk ${chunk.index + 1} stored as ${r.storageKind ?? 'unknown'}; mail ${r.mailStatus === 'sent' ? 'sent' : 'skipped'}. Trace ${r.traceId ?? 'n/a'}.`,
+        `Chunk ${chunk.index + 1} stored as ${r.storageKind ?? 'unknown'}; mail ${r.mailStatus ?? 'unknown'}.` +
+          (r.mailError ? ` Email error: ${r.mailError}` : '') +
+          ` Trace ${r.traceId ?? 'n/a'}.`,
       );
       setChunks((prev) =>
-        prev.map((c) => c.index === chunk.index
-          ? { ...c, state: 'done', link: r.driveWebViewLink }
-          : c),
+        prev.map((c) =>
+          c.index === chunk.index
+            ? {
+                ...c,
+                state: 'done',
+                link: r.driveWebViewLink,
+                downloadLink: r.driveDownloadLink,
+                filename: r.filename,
+                recordingId: r.recordingId,
+                mailStatus: r.mailStatus,
+                mailError: r.mailError,
+                recipients: r.recipients ?? c.recipients,
+                attemptInfo: undefined,
+                error: undefined,
+                busy: false,
+              }
+            : c,
+        ),
       );
     } catch (e) {
-      addTrace('error', `Chunk ${chunk.index + 1} upload failed: ${(e as Error).message}`);
+      const message = (e as Error).message;
+      addTrace('error', `Chunk ${chunk.index + 1} upload failed after retries: ${message}`);
       setChunks((prev) =>
-        prev.map((c) => c.index === chunk.index
-          ? { ...c, state: 'error', error: (e as Error).message }
-          : c),
+        prev.map((c) =>
+          c.index === chunk.index
+            ? { ...c, state: 'error', error: message, attemptInfo: undefined, busy: false }
+            : c,
+        ),
       );
     }
+  }
+
+  async function retryChunkUpload(index: number) {
+    const row = chunks.find((c) => c.index === index);
+    if (!row?.payload) {
+      addTrace('warn', `Cannot retry chunk ${index + 1}: original data no longer available.`);
+      return;
+    }
+    setChunks((prev) =>
+      prev.map((c) => (c.index === index ? { ...c, state: 'uploading', error: undefined, busy: true } : c)),
+    );
+    const safeLabel = label.trim() ? label : 'recording';
+    await runUpload(row.payload, safeLabel);
+  }
+
+  async function resendChunkEmail(index: number) {
+    const row = chunks.find((c) => c.index === index);
+    if (!row?.recordingId) {
+      addTrace('warn', `Cannot resend chunk ${index + 1}: no recording id yet.`);
+      return;
+    }
+    setChunks((prev) => prev.map((c) => (c.index === index ? { ...c, busy: true } : c)));
+    addTrace('info', `Resending email for chunk ${index + 1}...`);
+    const recipientsToUse = cleanRecipients.length > 0 ? cleanRecipients : row.recipients;
+    const result = await resendRecordingEmail(row.recordingId, recipientsToUse);
+    if (result.mailStatus === 'sent') {
+      addTrace('success', `Email resent for chunk ${index + 1}.`);
+      setChunks((prev) =>
+        prev.map((c) =>
+          c.index === index
+            ? { ...c, mailStatus: 'sent', mailError: undefined, recipients: result.recipients ?? c.recipients, busy: false }
+            : c,
+        ),
+      );
+    } else {
+      addTrace('error', `Resend failed for chunk ${index + 1}: ${result.error ?? 'unknown'}`);
+      setChunks((prev) =>
+        prev.map((c) =>
+          c.index === index ? { ...c, mailStatus: 'failed', mailError: result.error, busy: false } : c,
+        ),
+      );
+    }
+  }
+
+  function openMailDraftFor(index: number) {
+    const row = chunks.find((c) => c.index === index);
+    if (!row?.link) {
+      addTrace('warn', `Cannot build mail draft for chunk ${index + 1}: no link yet.`);
+      return;
+    }
+    const url = buildMailtoDraft({
+      recipients: (row.recipients && row.recipients.length > 0 ? row.recipients : cleanRecipients),
+      filename: row.filename ?? `${(label.trim() || 'recording')}_p${String(index + 1).padStart(2, '0')}`,
+      viewLink: row.link,
+      downloadLink: row.downloadLink,
+      sessionId: sessionRef.current,
+      chunkIndex: index,
+      sizeBytes: row.sizeBytes,
+    });
+    window.location.href = url;
+  }
+
+  function downloadChunkFromRow(index: number) {
+    const row = chunks.find((c) => c.index === index);
+    if (!row?.payload) {
+      addTrace('warn', `Cannot download chunk ${index + 1}: original data no longer available.`);
+      return;
+    }
+    const safeLabel = label.trim() ? label : 'recording';
+    downloadChunkLocally(row.payload, safeLabel);
+    addTrace('success', `Chunk ${index + 1} downloaded locally as backup.`);
   }
 
   async function saveStorageSettings() {
@@ -975,21 +1114,63 @@ export function App() {
         <section className="panel">
           <strong>Chunks</strong>
           <ul className="chunks">
-            {chunks.map((c) => (
-              <li key={c.index}>
-                <span className={`dot ${c.state === 'done' ? 'ok' : c.state === 'error' ? 'err' : 'up'}`} />
-                <span>Part {c.index + 1}</span>
-                <span className="muted">{(c.sizeBytes / (1024 * 1024)).toFixed(2)} MB</span>
-                <span className="muted">·</span>
-                <span className="muted">{c.state}</span>
-                {c.link && (
-                  <a href={c.link} target="_blank" rel="noreferrer" style={{ marginLeft: 'auto' }}>
-                    Open in Drive ↗
-                  </a>
-                )}
-                {c.error && <span className="error" style={{ marginLeft: 'auto' }}>{c.error}</span>}
-              </li>
-            ))}
+            {chunks.map((c) => {
+              const mailLabel = c.mailStatus === 'sent'
+                ? 'mail sent'
+                : c.mailStatus === 'failed'
+                  ? 'mail failed'
+                  : c.mailStatus === 'skipped-smtp'
+                    ? 'mail skipped (no SMTP)'
+                    : '';
+              return (
+                <li key={c.index} style={{ flexWrap: 'wrap', rowGap: 6 }}>
+                  <span className={`dot ${c.state === 'done' ? 'ok' : c.state === 'error' ? 'err' : 'up'}`} />
+                  <span>Part {c.index + 1}</span>
+                  <span className="muted">{(c.sizeBytes / (1024 * 1024)).toFixed(2)} MB</span>
+                  <span className="muted">·</span>
+                  <span className="muted">{c.state}{c.attemptInfo ? ` — ${c.attemptInfo}` : ''}</span>
+                  {mailLabel && (
+                    <>
+                      <span className="muted">·</span>
+                      <span className={c.mailStatus === 'failed' ? 'error' : 'muted'}>{mailLabel}</span>
+                    </>
+                  )}
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {c.link && (
+                      <a href={c.link} target="_blank" rel="noreferrer">
+                        Open ↗
+                      </a>
+                    )}
+                    {c.state === 'error' && c.payload && (
+                      <button type="button" disabled={c.busy} onClick={() => retryChunkUpload(c.index)}>
+                        Retry upload
+                      </button>
+                    )}
+                    {c.payload && c.state !== 'uploading' && (
+                      <button type="button" onClick={() => downloadChunkFromRow(c.index)}>
+                        Download
+                      </button>
+                    )}
+                    {c.recordingId && (c.mailStatus === 'failed' || c.mailStatus === 'skipped-smtp') && smtpReady && (
+                      <button type="button" disabled={c.busy} onClick={() => resendChunkEmail(c.index)}>
+                        Resend email
+                      </button>
+                    )}
+                    {c.link && (
+                      <button type="button" onClick={() => openMailDraftFor(c.index)} title="Open your mail app with a draft">
+                        Mail draft
+                      </button>
+                    )}
+                  </div>
+                  {c.error && (
+                    <div className="error" style={{ flexBasis: '100%' }}>{c.error}</div>
+                  )}
+                  {c.mailError && (
+                    <div className="error" style={{ flexBasis: '100%' }}>Email: {c.mailError}</div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}

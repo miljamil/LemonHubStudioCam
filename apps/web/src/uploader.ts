@@ -12,16 +12,37 @@ export interface UploadOpts {
   watermark?: boolean;
   /** Resolution preset selected at capture time, forwarded to the backend for logging/post-processing. */
   qualityPreset?: 'auto' | '480p' | '720p' | '1080p' | '4k';
+  /** Max retry attempts (default 3). Set to 1 to disable retries. */
+  maxAttempts?: number;
+  /** Called when an attempt fails and another will be tried. */
+  onAttempt?: (info: { attempt: number; maxAttempts: number; error: Error; nextDelayMs: number }) => void;
 }
 
+export type MailStatus = 'sent' | 'failed' | 'skipped-smtp';
+
 export interface UploadResponse {
+  recordingId?: string;
   driveFileId: string;
   driveWebViewLink: string;
   driveDownloadLink: string;
+  filename?: string;
+  recipients?: string[];
   emailedTo: string[];
   storageKind?: 'google-drive' | 'local';
-  mailStatus?: 'sent' | 'skipped-smtp';
+  mailStatus?: MailStatus;
+  mailError?: string;
   traceId?: string;
+}
+
+async function postOnce(form: FormData): Promise<UploadResponse> {
+  const res = await fetch(apiUrl('/api/recordings'), { method: 'POST', body: form });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const err = new Error(`Upload failed (${res.status}): ${text || res.statusText}`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
+  return (await res.json()) as UploadResponse;
 }
 
 export async function uploadChunk(
@@ -48,25 +69,84 @@ export async function uploadChunk(
     mime = 'application/zip';
   }
 
-  const form = new FormData();
-  form.append('file', blob, `chunk_${chunk.index + 1}`);
-  form.append('sessionId', opts.sessionId);
-  form.append('chunkIndex', String(chunk.index));
-  form.append('recipients', JSON.stringify(opts.recipients));
-  form.append('mimeType', mime);
-  if (opts.label) form.append('label', opts.label);
-  if (opts.watermark) form.append('watermark', '1');
-  if (opts.qualityPreset) form.append('qualityPreset', opts.qualityPreset);
+  const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
+  const backoffsMs = [2_000, 5_000, 12_000];
 
-  const res = await fetch(apiUrl('/api/recordings'), { method: 'POST', body: form });
-  if (!res.ok) {
-    const text = await res.text();
-    console.error(tracePrefix, 'upload failed', { status: res.status, text });
-    throw new Error(`Upload failed (${res.status}): ${text}`);
+  let lastErr: Error | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // FormData is recreated each attempt because some browsers consume the body.
+    const form = new FormData();
+    form.append('file', blob, `chunk_${chunk.index + 1}`);
+    form.append('sessionId', opts.sessionId);
+    form.append('chunkIndex', String(chunk.index));
+    form.append('recipients', JSON.stringify(opts.recipients));
+    form.append('mimeType', mime);
+    if (opts.label) form.append('label', opts.label);
+    if (opts.watermark) form.append('watermark', '1');
+    if (opts.qualityPreset) form.append('qualityPreset', opts.qualityPreset);
+
+    try {
+      const result = await postOnce(form);
+      console.info(tracePrefix, `upload complete on attempt ${attempt}`, result);
+      return result;
+    } catch (e) {
+      lastErr = e as Error;
+      const status = (e as Error & { status?: number }).status;
+      // Don't retry client errors (4xx other than 408/429) — they won't get better.
+      const retriable = !status || status >= 500 || status === 408 || status === 429;
+      console.warn(tracePrefix, `attempt ${attempt}/${maxAttempts} failed`, { status, message: lastErr.message });
+      if (!retriable || attempt >= maxAttempts) break;
+      const nextDelayMs = backoffsMs[Math.min(attempt - 1, backoffsMs.length - 1)];
+      opts.onAttempt?.({ attempt, maxAttempts, error: lastErr, nextDelayMs });
+      await new Promise((r) => setTimeout(r, nextDelayMs));
+    }
   }
-  const result = (await res.json()) as UploadResponse;
-  console.info(tracePrefix, 'upload complete', result);
-  return result;
+
+  console.error(tracePrefix, 'upload failed after all attempts', lastErr?.message);
+  throw lastErr ?? new Error('Upload failed');
+}
+
+/** Resend the email for a recording that's already been uploaded. No re-upload. */
+export async function resendRecordingEmail(
+  recordingId: string,
+  recipients?: string[],
+): Promise<{ mailStatus: MailStatus; recipients?: string[]; error?: string; traceId?: string }> {
+  const res = await fetch(apiUrl(`/api/recordings/${encodeURIComponent(recordingId)}/resend-email`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(recipients ? { recipients } : {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { mailStatus: 'failed', error: data?.error || `HTTP ${res.status}`, traceId: data?.traceId };
+  }
+  return data as { mailStatus: MailStatus; recipients?: string[]; traceId?: string };
+}
+
+/** Build a mailto: URL the user's mail client opens as a draft. */
+export function buildMailtoDraft(input: {
+  recipients: string[];
+  filename: string;
+  viewLink: string;
+  downloadLink?: string;
+  sessionId: string;
+  chunkIndex: number;
+  sizeBytes: number;
+}): string {
+  const sizeMb = (input.sizeBytes / (1024 * 1024)).toFixed(2);
+  const subject = `StudioCam recording — ${input.filename}`;
+  const body =
+    `Hello,\n\n` +
+    `A new StudioCam recording is ready.\n\n` +
+    `Session: ${input.sessionId}\n` +
+    `Part: ${input.chunkIndex + 1}\n` +
+    `File: ${input.filename}\n` +
+    `Size: ${sizeMb} MB\n\n` +
+    `Open: ${input.viewLink}\n` +
+    (input.downloadLink && input.downloadLink !== input.viewLink ? `Download: ${input.downloadLink}\n` : '') +
+    `\n— StudioCam`;
+  const to = encodeURIComponent(input.recipients.join(','));
+  return `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
 /** Trigger a local browser download of a chunk (fallback / always-on backup). */
@@ -81,3 +161,4 @@ export function downloadChunkLocally(chunk: ChunkPayload, baseName: string) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
+

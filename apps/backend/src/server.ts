@@ -478,44 +478,15 @@ app.post(
         uploaded.webContentLink ||
         `https://drive.google.com/uc?export=download&id=${uploaded.id}`;
 
-      let mailStatus: 'sent' | 'skipped-smtp' = 'skipped-smtp';
-      if (smtpIsConfigured()) {
-        const localAttachment = !shouldUseDrive && processedBuffer.length <= 20 * 1024 * 1024
-          ? {
-              filename,
-              content: processedBuffer,
-              contentType: meta.mimeType,
-            }
-          : undefined;
-        await sendRecordingMail({
-          to: recipients,
-          sessionId: meta.sessionId,
-          chunkIndex: meta.chunkIndex,
-          filename,
-          viewLink: uploaded.webViewLink,
-          downloadLink,
-          sizeBytes: req.file.size,
-          storageLabel: shouldUseDrive ? 'the linked Google Drive' : 'local StudioCam storage',
-          attachment: localAttachment,
-        });
-        mailStatus = 'sent';
-        console.info('[studiocam][upload:emailed]', {
-          traceId,
-          recipientCount: recipients.length,
-          recipients,
-        });
-      } else {
-        console.warn('[studiocam][upload:email-skipped]', {
-          traceId,
-          reason: 'SMTP not configured',
-        });
-      }
-
+      const storageKind: 'google-drive' | 'local' = shouldUseDrive ? 'google-drive' : 'local';
       const id = crypto.randomUUID();
+
+      // Persist the recording BEFORE attempting email, so the user can always retry email later.
       db.prepare(
         `INSERT INTO recordings
-          (id, session_id, chunk_index, drive_file_id, drive_link, recipients, size_bytes, mime_type)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, session_id, chunk_index, drive_file_id, drive_link, recipients, size_bytes, mime_type,
+           filename, download_link, storage_kind, mail_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         meta.sessionId,
@@ -525,15 +496,61 @@ app.post(
         JSON.stringify(recipients),
         req.file.size,
         meta.mimeType,
+        filename,
+        downloadLink,
+        storageKind,
+        smtpIsConfigured() ? 'pending' : 'skipped-smtp',
       );
 
+      let mailStatus: 'sent' | 'failed' | 'skipped-smtp' = 'skipped-smtp';
+      let mailError: string | undefined;
+      if (smtpIsConfigured()) {
+        try {
+          await sendRecordingMail({
+            to: recipients,
+            sessionId: meta.sessionId,
+            chunkIndex: meta.chunkIndex,
+            filename,
+            viewLink: uploaded.webViewLink,
+            downloadLink,
+            sizeBytes: req.file.size,
+            storageLabel: shouldUseDrive ? 'the linked Google Drive' : 'local StudioCam storage',
+          });
+          mailStatus = 'sent';
+          db.prepare(
+            `UPDATE recordings SET mail_status='sent', mail_error=NULL, mailed_at=datetime('now') WHERE id=?`,
+          ).run(id);
+          console.info('[studiocam][upload:emailed]', {
+            traceId,
+            recipientCount: recipients.length,
+            recipients,
+          });
+        } catch (mailErr) {
+          mailStatus = 'failed';
+          mailError = mailErr instanceof Error ? mailErr.message : String(mailErr);
+          db.prepare(`UPDATE recordings SET mail_status='failed', mail_error=? WHERE id=?`)
+            .run(mailError, id);
+          console.error('[studiocam][upload:email-failed]', { traceId, error: mailError });
+          // Do NOT throw — the upload itself succeeded, the user can retry email later.
+        }
+      } else {
+        console.warn('[studiocam][upload:email-skipped]', {
+          traceId,
+          reason: 'SMTP not configured',
+        });
+      }
+
       res.json({
+        recordingId: id,
         driveFileId: uploaded.id,
         driveWebViewLink: uploaded.webViewLink,
         driveDownloadLink: downloadLink,
-        emailedTo: smtpIsConfigured() ? recipients : [],
-        storageKind: shouldUseDrive ? 'google-drive' : 'local',
+        filename,
+        recipients,
+        emailedTo: mailStatus === 'sent' ? recipients : [],
+        storageKind,
         mailStatus,
+        mailError,
         traceId,
       });
     } catch (e) {
@@ -545,6 +562,69 @@ app.post(
     }
   },
 );
+
+// ---------- Resend email for an existing recording (no re-upload) ----------
+app.post('/api/recordings/:id/resend-email', async (req, res, next) => {
+  const traceId = crypto.randomUUID();
+  const id = req.params.id;
+  try {
+    const stmt = db.prepare(`SELECT * FROM recordings WHERE id = ?`) as unknown as {
+      get: (id: string) => {
+        id: string;
+        session_id: string;
+        chunk_index: number;
+        drive_link: string;
+        download_link: string | null;
+        recipients: string;
+        size_bytes: number;
+        filename: string | null;
+        storage_kind: string | null;
+        mime_type: string;
+      } | undefined;
+    };
+    const row = stmt.get(id);
+    if (!row) return res.status(404).json({ error: 'recording not found' });
+    if (!smtpIsConfigured()) {
+      return res.status(409).json({ error: 'SMTP not configured. Connect email first.' });
+    }
+
+    // Allow caller to override recipients (e.g., add/remove addresses on retry).
+    const overrideRecipients = Array.isArray(req.body?.recipients)
+      ? sanitizeRecipients(req.body.recipients.map(String))
+      : null;
+    const recipients = overrideRecipients && overrideRecipients.length > 0
+      ? overrideRecipients
+      : (JSON.parse(row.recipients) as string[]);
+    if (recipients.length === 0) return res.status(400).json({ error: 'no valid recipients' });
+    if (recipients.length > MAX_RECIPIENTS) return res.status(400).json({ error: `max ${MAX_RECIPIENTS} recipients` });
+
+    try {
+      await sendRecordingMail({
+        to: recipients,
+        sessionId: row.session_id,
+        chunkIndex: row.chunk_index,
+        filename: row.filename ?? `recording_${row.chunk_index + 1}`,
+        viewLink: row.drive_link,
+        downloadLink: row.download_link ?? row.drive_link,
+        sizeBytes: row.size_bytes,
+        storageLabel: row.storage_kind === 'google-drive' ? 'the linked Google Drive' : 'local StudioCam storage',
+      });
+      db.prepare(
+        `UPDATE recordings SET mail_status='sent', mail_error=NULL, mailed_at=datetime('now'), recipients=? WHERE id=?`,
+      ).run(JSON.stringify(recipients), id);
+      console.info('[studiocam][resend:ok]', { traceId, id, recipientCount: recipients.length });
+      res.json({ mailStatus: 'sent', recipients, traceId });
+    } catch (mailErr) {
+      const message = mailErr instanceof Error ? mailErr.message : String(mailErr);
+      db.prepare(`UPDATE recordings SET mail_status='failed', mail_error=? WHERE id=?`)
+        .run(message, id);
+      console.error('[studiocam][resend:failed]', { traceId, id, error: message });
+      res.status(502).json({ mailStatus: 'failed', error: message, traceId });
+    }
+  } catch (e) {
+    next(e);
+  }
+});
 
 // ---------- List recent recordings (for a future multi-device dashboard) ----------
 app.get('/api/recordings', (req, res) => {

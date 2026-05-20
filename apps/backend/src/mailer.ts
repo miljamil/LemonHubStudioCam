@@ -19,11 +19,6 @@ export interface RecordingMailInput {
   downloadLink: string;
   sizeBytes: number;
   storageLabel?: string;
-  attachment?: {
-    filename: string;
-    content: Buffer;
-    contentType: string;
-  };
 }
 
 export async function sendRecordingMail(input: RecordingMailInput) {
@@ -52,15 +47,6 @@ export async function sendRecordingMail(input: RecordingMailInput) {
     to: input.to.join(', '),
     subject: `StudioCam recording — ${input.filename}`,
     html,
-    attachments: input.attachment
-      ? [
-          {
-            filename: input.attachment.filename,
-            content: input.attachment.content,
-            contentType: input.attachment.contentType,
-          },
-        ]
-      : undefined,
   });
 }
 

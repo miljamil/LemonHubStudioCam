@@ -28,6 +28,20 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `);
 
+// --- Lightweight migrations (idempotent) ---
+const recordingsCols = (db.prepare(`PRAGMA table_info(recordings)`).all() as Array<{ name: string }>).map((c) => c.name);
+function addColumnIfMissing(col: string, ddl: string): void {
+  if (!recordingsCols.includes(col)) {
+    db.exec(`ALTER TABLE recordings ADD COLUMN ${ddl}`);
+  }
+}
+addColumnIfMissing('filename', `filename TEXT`);
+addColumnIfMissing('download_link', `download_link TEXT`);
+addColumnIfMissing('storage_kind', `storage_kind TEXT`);
+addColumnIfMissing('mail_status', `mail_status TEXT DEFAULT 'unknown'`);
+addColumnIfMissing('mail_error', `mail_error TEXT`);
+addColumnIfMissing('mailed_at', `mailed_at TEXT`);
+
 export interface RecordingRow {
   id: string;
   session_id: string;
@@ -38,6 +52,12 @@ export interface RecordingRow {
   size_bytes: number;
   mime_type: string;
   created_at: string;
+  filename: string | null;
+  download_link: string | null;
+  storage_kind: string | null;
+  mail_status: 'sent' | 'failed' | 'skipped-smtp' | 'unknown' | null;
+  mail_error: string | null;
+  mailed_at: string | null;
 }
 
 export function getSetting(key: string): string | null {
