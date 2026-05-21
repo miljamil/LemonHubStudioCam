@@ -136,11 +136,12 @@ async function applyWatermark(buffer: Buffer, mimeType: string, traceId: string)
         '-y',
         '-i', inPath,
         '-i', WATERMARK_ASSET_PATH,
-        // Label final overlay output and map it explicitly so ffmpeg cannot fall back to original video.
-        '-filter_complex', '[1:v][0:v]scale2ref=oh*mdar:ih*0.15[wm][vid];[vid][wm]overlay=W-w-16:H-h-16[vout]',
+        // Scale watermark to 20% of the video height (main_h), preserve aspect ratio (oh*mdar).
+        // Overlay at bottom-right with 16px padding. Label output [vout] and map explicitly.
+        '-filter_complex', '[1:v][0:v]scale2ref=oh*mdar:main_h*0.20[wm][vid];[vid][wm]overlay=W-w-16:H-h-16[vout]',
         '-map', '[vout]',
-        '-c:a', 'copy',
         '-map', '0:a?',
+        '-c:a', 'copy',
         outPath,
       ];
       const proc = spawn(ffmpegBinaryPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
