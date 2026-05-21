@@ -76,7 +76,6 @@ interface StorageState {
     linked: boolean;
   };
   smtpLinked: boolean;
-  smtpLinkedEmail?: string;
 }
 
 function uuid(): string {
@@ -102,15 +101,7 @@ export function App() {
   const [googleFolderId, setGoogleFolderId] = useState('');
   const [storageState, setStorageState] = useState<StorageState | null>(null);
   const [storageModalOpen, setStorageModalOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'email' | 'storage' | 'capture'>('email');
-
-  // SMTP form state
-  const [smtpHost, setSmtpHost] = useState('smtp.gmail.com');
-  const [smtpPort, setSmtpPort] = useState(465);
-  const [smtpSecure, setSmtpSecure] = useState(true);
-  const [smtpUser, setSmtpUser] = useState('');
-  const [smtpPass, setSmtpPass] = useState('');
-  const [smtpSaving, setSmtpSaving] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'storage' | 'capture'>('storage');
 
   const [recording, setRecording] = useState(false);
   const [previewEnabled, setPreviewEnabled] = useState(true);
@@ -199,20 +190,10 @@ export function App() {
         setGoogleFolderId(data.google.folderId ?? '');
       })
       .catch((e) => addTrace('warn', `Could not load storage settings: ${(e as Error).message}`));
-    // Load SMTP settings too
-    fetch(apiUrl('/api/smtp/settings'))
-      .then((res) => res.json())
-      .then((data: { host?: string; port?: number; secure?: boolean; user?: string }) => {
-        if (data.host) setSmtpHost(data.host);
-        if (data.port) setSmtpPort(data.port);
-        if (typeof data.secure === 'boolean') setSmtpSecure(data.secure);
-        if (data.user) setSmtpUser(data.user);
-      })
-      .catch(() => undefined);
   }, []);
 
   const driveReady = Boolean(storageState?.google.linked);
-  const smtpReady = Boolean(storageState?.smtpLinked);
+  const emailReady = Boolean(storageState?.smtpLinked);
   const storageSummary = storageMode === 'google-drive'
     ? (driveReady ? `Google Drive connected (${storageState?.google.linkedEmail || 'account linked'})` : 'Google Drive selected, not linked yet')
     : 'Local storage active';
@@ -647,58 +628,6 @@ export function App() {
     }
   }
 
-  async function connectSmtp() {
-    setSmtpSaving(true);
-    setError(null);
-    try {
-      const normalizedHost = smtpHost.trim();
-      const normalizedUser = smtpUser.trim().toLowerCase();
-      const normalizedPass = normalizedHost.includes('gmail.com')
-        ? smtpPass.replace(/\s+/g, '')
-        : smtpPass;
-
-      const res = await fetch(apiUrl('/api/smtp/settings'), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          host: normalizedHost,
-          port: smtpPort,
-          secure: smtpSecure,
-          user: normalizedUser,
-          pass: normalizedPass,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const detail = Array.isArray(data.details) ? ` (${data.details.join('; ')})` : '';
-        const hint = data.hint ? ` Hint: ${data.hint}` : '';
-        throw new Error(`${data.error || 'Failed to save SMTP settings'}${detail}${hint}`);
-      }
-      setStorageState((prev) => prev ? { ...prev, smtpLinked: true, smtpLinkedEmail: normalizedUser } : prev);
-      addTrace('success', `Email connected: ${normalizedUser}. SMTP verified successfully.`);
-      setSmtpPass(''); // clear password from memory
-    } catch (e) {
-      const message = (e as Error).message;
-      setError(message);
-      addTrace('error', `Email connect failed: ${message}`);
-    } finally {
-      setSmtpSaving(false);
-    }
-  }
-
-  async function disconnectSmtp() {
-    setError(null);
-    try {
-      await fetch(apiUrl('/api/smtp/settings'), { method: 'DELETE' });
-      setStorageState((prev) => prev ? { ...prev, smtpLinked: false, smtpLinkedEmail: '' } : prev);
-      setSmtpUser('');
-      setSmtpPass('');
-      addTrace('info', 'Email disconnected.');
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-
   return (
     <div className="app">
       <h1>Lemon Hub Studio Cam</h1>
@@ -712,7 +641,7 @@ export function App() {
           <div>
             <strong>Connections</strong>
             <div className="muted">
-              Email: {smtpReady ? `connected (${storageState?.smtpLinkedEmail || 'linked'})` : 'not connected'}.
+              Email delivery: {emailReady ? 'active (server-managed)' : 'not configured on backend'}.
               {' '}Storage: {storageSummary}.
             </div>
           </div>
@@ -723,7 +652,7 @@ export function App() {
           </div>
         </div>
         <div className="muted" style={{ marginTop: 8 }}>
-          Connect your email to send recordings to recipients. Optionally connect Google Drive for cloud storage.
+          Email sending is managed on the server (Resend/SMTP). Optionally connect Google Drive for cloud storage.
           {isSafari && ' Safari on recent iPadOS versions can record camera video, but some sources and codecs are more limited.'}
         </div>
       </section>
@@ -851,13 +780,6 @@ export function App() {
             <div className="row" style={{ marginTop: 12, gap: 0 }}>
               <button
                 type="button"
-                className={settingsTab === 'email' ? 'tab-active' : 'tab'}
-                onClick={() => setSettingsTab('email')}
-              >
-                Connect Email
-              </button>
-              <button
-                type="button"
                 className={settingsTab === 'storage' ? 'tab-active' : 'tab'}
                 onClick={() => setSettingsTab('storage')}
               >
@@ -871,79 +793,6 @@ export function App() {
                 Source / Camera
               </button>
             </div>
-
-            {/* ========= EMAIL TAB ========= */}
-            {settingsTab === 'email' && (
-              <div style={{ marginTop: 16 }}>
-                {smtpReady ? (
-                  <div>
-                    <div style={{ color: '#4ade80', fontWeight: 600, marginBottom: 8 }}>
-                      ✓ Email connected: {storageState?.smtpLinkedEmail}
-                    </div>
-                    <p className="muted">
-                      Recordings will be emailed to your recipients through this account.
-                    </p>
-                    <button type="button" className="secondary" onClick={disconnectSmtp}>
-                      Disconnect email
-                    </button>
-                  </div>
-                ) : (
-                  <div>
-                    <p className="muted" style={{ marginBottom: 12 }}>
-                      Connect your email so StudioCam can send recordings to recipients.
-                      For Gmail, use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" style={{ color: '#60a5fa' }}>App Password</a> (not your regular password).
-                    </p>
-
-                    {/* Preset quick-select */}
-                    <div style={{ marginBottom: 12 }}>
-                      <label>Email provider</label>
-                      <select
-                        value={smtpHost === 'smtp.gmail.com' ? 'gmail' : smtpHost === 'smtp.outlook.com' ? 'outlook' : 'custom'}
-                        onChange={(e) => {
-                          if (e.target.value === 'gmail') { setSmtpHost('smtp.gmail.com'); setSmtpPort(465); setSmtpSecure(true); }
-                          else if (e.target.value === 'outlook') { setSmtpHost('smtp.outlook.com'); setSmtpPort(587); setSmtpSecure(false); }
-                        }}
-                      >
-                        <option value="gmail">Gmail</option>
-                        <option value="outlook">Outlook / Hotmail</option>
-                        <option value="custom">Custom SMTP</option>
-                      </select>
-                    </div>
-
-                    <div className="row">
-                      <div style={{ flex: 2 }}>
-                        <label>SMTP Host</label>
-                        <input style={{ width: '100%' }} value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="smtp.gmail.com" />
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <label>Port</label>
-                        <input style={{ width: '100%' }} type="number" value={smtpPort} onChange={(e) => setSmtpPort(Number(e.target.value))} />
-                      </div>
-                      <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end' }}>
-                        <label style={{ display: 'flex', gap: 6, alignItems: 'center', margin: 0 }}>
-                          <input type="checkbox" checked={smtpSecure} onChange={(e) => setSmtpSecure(e.target.checked)} /> SSL/TLS
-                        </label>
-                      </div>
-                    </div>
-                    <div className="row" style={{ marginTop: 8 }}>
-                      <div style={{ flex: 1 }}>
-                        <label>Email address</label>
-                        <input style={{ width: '100%' }} type="email" value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} placeholder="you@gmail.com" />
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <label>App password</label>
-                        <input style={{ width: '100%' }} type="password" value={smtpPass} onChange={(e) => setSmtpPass(e.target.value)} placeholder="xxxx xxxx xxxx xxxx" />
-                      </div>
-                    </div>
-                    <div className="row" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
-                      <button type="button" className="primary" onClick={connectSmtp} disabled={smtpSaving || !smtpUser || !smtpPass}>
-                        {smtpSaving ? 'Connecting...' : 'Connect & verify'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* ========= STORAGE TAB ========= */}
             {settingsTab === 'storage' && (
@@ -961,9 +810,9 @@ export function App() {
                 {storageMode === 'local' && (
                   <div className="muted" style={{ marginTop: 12 }}>
                     Recordings are stored on the server. Links to the files are included in the email sent to recipients.
-                    {smtpReady
-                      ? ' Files under 20 MB are also attached directly to the email.'
-                      : ' Connect your email first (Email tab) so recordings can be sent.'}
+                    {emailReady
+                      ? ' Email delivery is handled by backend transport settings.'
+                      : ' Ask the admin to configure backend email transport (Resend or SMTP).'}
                   </div>
                 )}
 
@@ -1176,7 +1025,7 @@ export function App() {
                         Download
                       </button>
                     )}
-                    {c.recordingId && (c.mailStatus === 'failed' || c.mailStatus === 'skipped-smtp') && smtpReady && (
+                    {c.recordingId && (c.mailStatus === 'failed' || c.mailStatus === 'skipped-smtp') && emailReady && (
                       <button type="button" disabled={c.busy} onClick={() => resendChunkEmail(c.index)}>
                         Resend email
                       </button>
