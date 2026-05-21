@@ -49,24 +49,28 @@ const DEFAULT_SETTINGS: StorageSettings = {
   },
 };
 
+function fromSettingOrDefault(value: string | null, fallback: string): string {
+  return value && value.trim() ? value : fallback;
+}
+
 export function loadStorageSettings(): StorageSettings {
   return {
     storageMode: (getSetting('storageMode') as StorageMode | null) ?? DEFAULT_SETTINGS.storageMode,
     google: {
-      clientId: getSetting('google.clientId') ?? DEFAULT_SETTINGS.google.clientId,
-      clientSecret: getSetting('google.clientSecret') ?? DEFAULT_SETTINGS.google.clientSecret,
-      redirectUri: getSetting('google.redirectUri') ?? DEFAULT_SETTINGS.google.redirectUri,
-      folderId: getSetting('google.folderId') ?? DEFAULT_SETTINGS.google.folderId,
-      refreshToken: getSetting('google.refreshToken') ?? DEFAULT_SETTINGS.google.refreshToken,
+      clientId: fromSettingOrDefault(getSetting('google.clientId'), DEFAULT_SETTINGS.google.clientId),
+      clientSecret: fromSettingOrDefault(getSetting('google.clientSecret'), DEFAULT_SETTINGS.google.clientSecret),
+      redirectUri: fromSettingOrDefault(getSetting('google.redirectUri'), DEFAULT_SETTINGS.google.redirectUri),
+      folderId: fromSettingOrDefault(getSetting('google.folderId'), DEFAULT_SETTINGS.google.folderId),
+      refreshToken: fromSettingOrDefault(getSetting('google.refreshToken'), DEFAULT_SETTINGS.google.refreshToken),
       linkedEmail: getSetting('google.linkedEmail') ?? DEFAULT_SETTINGS.google.linkedEmail,
     },
     smtp: {
-      host: getSetting('smtp.host') ?? DEFAULT_SETTINGS.smtp.host,
+      host: fromSettingOrDefault(getSetting('smtp.host'), DEFAULT_SETTINGS.smtp.host),
       port: Number(getSetting('smtp.port') ?? DEFAULT_SETTINGS.smtp.port),
       secure: (getSetting('smtp.secure') ?? String(DEFAULT_SETTINGS.smtp.secure)) === 'true',
-      user: getSetting('smtp.user') ?? DEFAULT_SETTINGS.smtp.user,
-      pass: getSetting('smtp.pass') ?? DEFAULT_SETTINGS.smtp.pass,
-      from: getSetting('smtp.from') ?? DEFAULT_SETTINGS.smtp.from,
+      user: fromSettingOrDefault(getSetting('smtp.user'), DEFAULT_SETTINGS.smtp.user),
+      pass: fromSettingOrDefault(getSetting('smtp.pass'), DEFAULT_SETTINGS.smtp.pass),
+      from: fromSettingOrDefault(getSetting('smtp.from'), DEFAULT_SETTINGS.smtp.from),
       linkedEmail: getSetting('smtp.linkedEmail') ?? DEFAULT_SETTINGS.smtp.linkedEmail,
     },
   };
