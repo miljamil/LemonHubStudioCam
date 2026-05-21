@@ -139,5 +139,7 @@ export function driveLinked(settings = loadStorageSettings()): boolean {
 }
 
 export function smtpIsConfigured(settings = loadStorageSettings()): boolean {
+  // Resend HTTP transport bypasses SMTP entirely.
+  if (process.env.RESEND_API_KEY?.trim()) return true;
   return Boolean(settings.smtp.host && settings.smtp.user && settings.smtp.pass);
 }
