@@ -45,7 +45,12 @@ export function buildAuthUrl(
   return client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: ['https://www.googleapis.com/auth/drive.file'],
+    // Include email/openid so callback can reliably identify the linked account.
+    scope: [
+      'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'openid',
+    ],
     login_hint: options?.loginHint,
     state: options?.state,
   });

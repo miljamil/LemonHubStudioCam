@@ -269,7 +269,14 @@ app.get('/api/auth/google/callback', async (req, res) => {
   try {
     const settings = loadStorageSettings();
     const tokens = await exchangeCode(code, settings.google);
-    const linkedEmail = await fetchAuthenticatedEmail(tokens, settings.google);
+    let linkedEmail: string | null = null;
+    try {
+      linkedEmail = await fetchAuthenticatedEmail(tokens, settings.google);
+    } catch (emailErr) {
+      console.warn('[studiocam][oauth:google] could not fetch authenticated email, continuing', {
+        error: emailErr instanceof Error ? emailErr.message : String(emailErr),
+      });
+    }
 
     let expectedEmail: string | null = null;
     if (stateRaw) {
