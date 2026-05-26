@@ -132,12 +132,19 @@ async function applyWatermark(buffer: Buffer, mimeType: string, traceId: string)
 
   try {
     await new Promise<void>((resolve, reject) => {
+      // Scale timeout with file size: 30s base + 3s per MB of input.
+      // A 500MB (30-min 720p) video gets ~25 min; a 50MB clip gets ~3 min.
+      const sizeMb = buffer.length / (1024 * 1024);
+      const FFMPEG_TIMEOUT_MS = Math.max(60_000, 30_000 + Math.ceil(sizeMb * 3_000));
+      console.info('[studiocam][postprocess:watermark] timeout calculated', {
+        traceId,
+        sizeMb: sizeMb.toFixed(1),
+        timeoutMs: FFMPEG_TIMEOUT_MS,
+      });
       const args = [
         '-y',
         '-i', inPath,
         '-i', WATERMARK_ASSET_PATH,
-        // Scale watermark to 20% of the video height (main_h), preserve aspect ratio (oh*mdar).
-        // Overlay at bottom-right with 16px padding. Label output [vout] and map explicitly.
         // Scale watermark to 1/30 of its own pixel width, reduce opacity to 30%, overlay bottom-right 16px padding.
         '-filter_complex', '[1:v]scale=w=iw/30:h=-1,format=rgba,colorchannelmixer=aa=0.3[wm];[0:v][wm]overlay=main_w-overlay_w-16:main_h-overlay_h-16[vout]',
         '-map', '[vout]',
@@ -146,12 +153,17 @@ async function applyWatermark(buffer: Buffer, mimeType: string, traceId: string)
         outPath,
       ];
       const proc = spawn(ffmpegBinaryPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      const timer = setTimeout(() => {
+        proc.kill('SIGKILL');
+        reject(new Error(`ffmpeg timed out after ${FFMPEG_TIMEOUT_MS}ms`));
+      }, FFMPEG_TIMEOUT_MS);
       let stderr = '';
       proc.stderr.on('data', (chunk: Buffer | string) => {
         stderr += chunk.toString();
       });
-      proc.on('error', (err) => reject(err));
+      proc.on('error', (err) => { clearTimeout(timer); reject(err); });
       proc.on('close', (code) => {
+        clearTimeout(timer);
         if (code === 0) {
           resolve();
           return;
@@ -533,24 +545,37 @@ app.post(
         smtpIsConfigured() ? 'pending' : 'skipped-smtp',
       );
 
-      let mailStatus: 'sent' | 'failed' | 'skipped-smtp' = 'skipped-smtp';
-      let mailError: string | undefined;
       const socialMediaConsent = meta.socialMediaConsent === '1' || meta.socialMediaConsent === 'true';
+
+      // Respond immediately after storage — email is sent in background.
+      // This prevents Resend/SMTP latency from stalling the client.
+      res.json({
+        recordingId: id,
+        driveFileId: uploaded.id,
+        driveWebViewLink: uploaded.webViewLink,
+        driveDownloadLink: downloadLink,
+        filename,
+        recipients,
+        emailedTo: [],
+        storageKind,
+        mailStatus: smtpIsConfigured() ? 'pending' : 'skipped-smtp',
+        traceId,
+      });
+
+      // Fire-and-forget email in the background — DB tracks status.
       if (smtpIsConfigured()) {
-        try {
-          await sendRecordingMail({
-            to: recipients,
-            sessionId: meta.sessionId,
-            chunkIndex: meta.chunkIndex,
-            filename,
-            viewLink: uploaded.webViewLink,
-            downloadLink,
-            sizeBytes: req.file.size,
-            storageLabel: shouldUseDrive ? 'the linked Google Drive' : 'local StudioCam storage',
-            socialMediaConsent,
-            googleLinkedEmail: storageSettings.google.linkedEmail || undefined,
-          });
-          mailStatus = 'sent';
+        sendRecordingMail({
+          to: recipients,
+          sessionId: meta.sessionId,
+          chunkIndex: meta.chunkIndex,
+          filename,
+          viewLink: uploaded.webViewLink,
+          downloadLink,
+          sizeBytes: req.file.size,
+          storageLabel: shouldUseDrive ? 'the linked Google Drive' : 'local StudioCam storage',
+          socialMediaConsent,
+          googleLinkedEmail: storageSettings.google.linkedEmail || undefined,
+        }).then(() => {
           db.prepare(
             `UPDATE recordings SET mail_status='sent', mail_error=NULL, mailed_at=datetime('now') WHERE id=?`,
           ).run(id);
@@ -559,34 +584,18 @@ app.post(
             recipientCount: recipients.length,
             recipients,
           });
-        } catch (mailErr) {
-          mailStatus = 'failed';
-          mailError = mailErr instanceof Error ? mailErr.message : String(mailErr);
+        }).catch((mailErr) => {
+          const mailError = mailErr instanceof Error ? mailErr.message : String(mailErr);
           db.prepare(`UPDATE recordings SET mail_status='failed', mail_error=? WHERE id=?`)
             .run(mailError, id);
           console.error('[studiocam][upload:email-failed]', { traceId, error: mailError });
-          // Do NOT throw — the upload itself succeeded, the user can retry email later.
-        }
+        });
       } else {
         console.warn('[studiocam][upload:email-skipped]', {
           traceId,
           reason: 'SMTP not configured',
         });
       }
-
-      res.json({
-        recordingId: id,
-        driveFileId: uploaded.id,
-        driveWebViewLink: uploaded.webViewLink,
-        driveDownloadLink: downloadLink,
-        filename,
-        recipients,
-        emailedTo: mailStatus === 'sent' ? recipients : [],
-        storageKind,
-        mailStatus,
-        mailError,
-        traceId,
-      });
     } catch (e) {
       console.error('[studiocam][upload:error]', {
         traceId,
