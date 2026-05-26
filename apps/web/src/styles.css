@@ -11,9 +11,23 @@
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
-body { background: var(--bg); color: var(--text); }
+body {
+  background: var(--bg);
+  color: var(--text);
+  position: relative;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: url('./logo.png') repeat;
+  background-size: 120px;
+  opacity: 0.1;
+  pointer-events: none;
+  z-index: 0;
+}
 
-.app { max-width: 960px; margin: 0 auto; padding: 24px 16px 80px; }
+.app { max-width: 960px; margin: 0 auto; padding: 24px 16px 80px; position: relative; z-index: 1; }
 h1 { margin: 0 0 4px; font-size: 28px; }
 .subtitle { color: var(--muted); margin: 0 0 24px; }
 

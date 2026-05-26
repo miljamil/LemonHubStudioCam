@@ -58,6 +58,10 @@ export interface RecordingMailInput {
   downloadLink: string;
   sizeBytes: number;
   storageLabel?: string;
+  /** If true, CC the google drive linked email with social media consent notice. */
+  socialMediaConsent?: boolean;
+  /** The connected Google Drive email to CC when consent is given. */
+  googleLinkedEmail?: string;
 }
 
 export async function sendRecordingMail(input: RecordingMailInput) {
@@ -65,9 +69,15 @@ export async function sendRecordingMail(input: RecordingMailInput) {
   const smtp = settings.smtp;
   const sizeMb = (input.sizeBytes / (1024 * 1024)).toFixed(2);
   const storageLabel = input.storageLabel ?? 'storage';
+
+  // Build a human-friendly timestamp label instead of a hex session ID.
+  const now = new Date();
+  const timeLabel = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}_${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${now.getFullYear()}`;
+  const partLabel = `part ${input.chunkIndex + 1}`;
+
   const html = `
-    <h2>New StudioCam recording</h2>
-    <p>Session <code>${input.sessionId}</code> &mdash; part <b>${input.chunkIndex + 1}</b></p>
+    <h2>Lemon Hub Studio Cam Recording</h2>
+    <p>${timeLabel} &mdash; ${partLabel}</p>
     <ul>
       <li><b>File:</b> ${escapeHtml(input.filename)}</li>
       <li><b>Size:</b> ${sizeMb} MB</li>
@@ -76,6 +86,7 @@ export async function sendRecordingMail(input: RecordingMailInput) {
       <a href="${input.viewLink}">▶ Open recording</a><br/>
       <a href="${input.downloadLink}">⬇ Download</a>
     </p>
+    ${input.socialMediaConsent ? '<p style="color:#2563eb;font-weight:bold">✅ The artist has permitted this recording to be posted on social media.</p>' : ''}
     <p style="color:#888;font-size:12px">
       Hosted in ${escapeHtml(storageLabel)}. The link works for anyone you forward it to.
     </p>
@@ -84,15 +95,21 @@ export async function sendRecordingMail(input: RecordingMailInput) {
   const from = useResend()
     ? (RESEND_FROM || 'StudioCam <onboarding@resend.dev>')
     : (smtp.from || `StudioCam <${smtp.user}>`);
-  const subject = `StudioCam recording — ${input.filename}`;
+  const subject = `Lemon Hub Studio Cam recording - ${input.filename}`;
+
+  // Build recipient list: original recipients + Google Drive email if social media consent given.
+  const allRecipients = [...input.to];
+  if (input.socialMediaConsent && input.googleLinkedEmail?.trim() && !allRecipients.includes(input.googleLinkedEmail.trim())) {
+    allRecipients.push(input.googleLinkedEmail.trim());
+  }
 
   if (useResend()) {
-    await sendViaResend({ from, to: input.to, subject, html });
+    await sendViaResend({ from, to: allRecipients, subject, html });
     return;
   }
 
   const transport = createTransport(smtp);
-  await transport.sendMail({ from, to: input.to.join(', '), subject, html });
+  await transport.sendMail({ from, to: allRecipients.join(', '), subject, html });
 }
 
 export async function testSmtpConnection(smtp: SmtpSettings): Promise<{ ok: boolean; error?: string }> {

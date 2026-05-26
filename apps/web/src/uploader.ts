@@ -12,6 +12,8 @@ export interface UploadOpts {
   watermark?: boolean;
   /** Resolution preset selected at capture time, forwarded to the backend for logging/post-processing. */
   qualityPreset?: 'auto' | '480p' | '720p' | '1080p' | '4k';
+  /** When true, notify the studio that the artist consents to social media posting. */
+  socialMediaConsent?: boolean;
   /** Max retry attempts (default 3). Set to 1 to disable retries. */
   maxAttempts?: number;
   /** Called when an attempt fails and another will be tried. */
@@ -84,6 +86,7 @@ export async function uploadChunk(
     if (opts.label) form.append('label', opts.label);
     if (opts.watermark) form.append('watermark', '1');
     if (opts.qualityPreset) form.append('qualityPreset', opts.qualityPreset);
+    if (opts.socialMediaConsent) form.append('socialMediaConsent', '1');
 
     try {
       const result = await postOnce(form);
@@ -157,17 +160,17 @@ export function buildMailtoDraft(input: {
   sizeBytes: number;
 }): string {
   const sizeMb = (input.sizeBytes / (1024 * 1024)).toFixed(2);
-  const subject = `StudioCam recording — ${input.filename}`;
+  const subject = `Lemon Hub Studio Cam recording — ${input.filename}`;
   const body =
     `Hello,\n\n` +
-    `A new StudioCam recording is ready.\n\n` +
+    `A new Lemon Hub Studio Cam recording is ready.\n\n` +
     `Session: ${input.sessionId}\n` +
     `Part: ${input.chunkIndex + 1}\n` +
     `File: ${input.filename}\n` +
     `Size: ${sizeMb} MB\n\n` +
     `Open: ${input.viewLink}\n` +
     (input.downloadLink && input.downloadLink !== input.viewLink ? `Download: ${input.downloadLink}\n` : '') +
-    `\n— StudioCam`;
+    `\n— Lemon Hub Studio Cam`;
   const to = encodeURIComponent(input.recipients.join(','));
   return `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }

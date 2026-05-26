@@ -138,7 +138,8 @@ async function applyWatermark(buffer: Buffer, mimeType: string, traceId: string)
         '-i', WATERMARK_ASSET_PATH,
         // Scale watermark to 20% of the video height (main_h), preserve aspect ratio (oh*mdar).
         // Overlay at bottom-right with 16px padding. Label output [vout] and map explicitly.
-        '-filter_complex', '[1:v][0:v]scale2ref=oh*mdar:main_h*0.20[wm][vid];[vid][wm]overlay=W-w-16:H-h-16[vout]',
+        // Scale watermark to 1/30 of its own pixel width, reduce opacity to 30%, overlay bottom-right 16px padding.
+        '-filter_complex', '[1:v]scale=w=iw/30:h=-1,format=rgba,colorchannelmixer=aa=0.3[wm];[0:v][wm]overlay=main_w-overlay_w-16:main_h-overlay_h-16[vout]',
         '-map', '[vout]',
         '-map', '0:a?',
         '-c:a', 'copy',
@@ -427,6 +428,7 @@ const metaSchema = z.object({
   label: z.string().optional(),
   watermark: z.union([z.literal('1'), z.literal('0'), z.literal('true'), z.literal('false')]).optional(),
   qualityPreset: z.enum(['auto', '480p', '720p', '1080p', '4k']).optional(),
+  socialMediaConsent: z.union([z.literal('1'), z.literal('0'), z.literal('true'), z.literal('false')]).optional(),
 });
 
 app.post(
@@ -469,9 +471,11 @@ app.post(
       }
 
       const ext = guessExt(meta.mimeType);
+      const now = new Date();
+      const timeStamp = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}_${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${now.getFullYear()}`;
       const filename =
         `${(meta.label ?? 'recording').replace(/[^a-z0-9_-]+/gi, '_')}` +
-        `_${meta.sessionId.slice(0, 8)}_p${String(meta.chunkIndex + 1).padStart(2, '0')}.${ext}`;
+        `_${timeStamp}_p${String(meta.chunkIndex + 1).padStart(2, '0')}.${ext}`;
 
       const watermarkRequested = meta.watermark === '1' || meta.watermark === 'true';
       console.info('[studiocam][upload:options]', {
@@ -531,6 +535,7 @@ app.post(
 
       let mailStatus: 'sent' | 'failed' | 'skipped-smtp' = 'skipped-smtp';
       let mailError: string | undefined;
+      const socialMediaConsent = meta.socialMediaConsent === '1' || meta.socialMediaConsent === 'true';
       if (smtpIsConfigured()) {
         try {
           await sendRecordingMail({
@@ -542,6 +547,8 @@ app.post(
             downloadLink,
             sizeBytes: req.file.size,
             storageLabel: shouldUseDrive ? 'the linked Google Drive' : 'local StudioCam storage',
+            socialMediaConsent,
+            googleLinkedEmail: storageSettings.google.linkedEmail || undefined,
           });
           mailStatus = 'sent';
           db.prepare(
