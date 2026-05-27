@@ -506,6 +506,15 @@ app.post(
       const shouldUseDrive =
         storageSettings.storageMode === 'google-drive' && driveLinked(storageSettings);
 
+      console.info('[studiocam][upload:storage-decision]', {
+        traceId,
+        storageMode: storageSettings.storageMode,
+        driveLinked: driveLinked(storageSettings),
+        shouldUseDrive,
+        hasRefreshToken: Boolean(storageSettings.google.refreshToken),
+        hasClientId: Boolean(storageSettings.google.clientId),
+      });
+
       const uploaded = shouldUseDrive
         ? await uploadToDrive(filename, meta.mimeType, processedBuffer, storageSettings.google)
         : await saveLocally(filename, processedBuffer);

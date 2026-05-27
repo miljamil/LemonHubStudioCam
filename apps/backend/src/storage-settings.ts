@@ -59,15 +59,23 @@ export function loadStorageSettings(): StorageSettings {
   const googleClientId = config.google.clientId || fromSettingOrDefault(getSetting('google.clientId'), DEFAULT_SETTINGS.google.clientId);
   const googleClientSecret = config.google.clientSecret || fromSettingOrDefault(getSetting('google.clientSecret'), DEFAULT_SETTINGS.google.clientSecret);
   const googleRedirectUri = config.google.redirectUri || fromSettingOrDefault(getSetting('google.redirectUri'), DEFAULT_SETTINGS.google.redirectUri);
+  const googleRefreshToken = config.google.refreshToken || fromSettingOrDefault(getSetting('google.refreshToken'), DEFAULT_SETTINGS.google.refreshToken);
+  const googleFolderId = config.google.folderId || fromSettingOrDefault(getSetting('google.folderId'), DEFAULT_SETTINGS.google.folderId);
+
+  // Allow STORAGE_MODE env var to override DB (survives ephemeral DB resets on redeploy).
+  const envStorageMode = process.env.STORAGE_MODE?.trim() as StorageMode | undefined;
+  const storageModeValue = envStorageMode && ['local', 'google-drive'].includes(envStorageMode)
+    ? envStorageMode
+    : (getSetting('storageMode') as StorageMode | null) ?? DEFAULT_SETTINGS.storageMode;
 
   return {
-    storageMode: (getSetting('storageMode') as StorageMode | null) ?? DEFAULT_SETTINGS.storageMode,
+    storageMode: storageModeValue,
     google: {
       clientId: googleClientId,
       clientSecret: googleClientSecret,
       redirectUri: googleRedirectUri,
-      folderId: fromSettingOrDefault(getSetting('google.folderId'), DEFAULT_SETTINGS.google.folderId),
-      refreshToken: fromSettingOrDefault(getSetting('google.refreshToken'), DEFAULT_SETTINGS.google.refreshToken),
+      folderId: googleFolderId,
+      refreshToken: googleRefreshToken,
       linkedEmail: getSetting('google.linkedEmail') ?? DEFAULT_SETTINGS.google.linkedEmail,
     },
     smtp: {
