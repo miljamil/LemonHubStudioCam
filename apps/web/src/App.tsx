@@ -628,8 +628,15 @@ export function App() {
       if (!res.ok) {
         throw new Error(data.error || 'Unable to get Google auth URL');
       }
-      addTrace('info', `Opening Google consent screen for ${email}.`);
-      window.location.href = data.url;
+      addTrace('info', `Google consent URL ready for ${email}.`);
+      // Try clipboard first (works in kiosk browsers), then navigate as fallback.
+      try {
+        await navigator.clipboard.writeText(data.url);
+        alert('Auth link copied to clipboard!\n\nOpen Chrome or Safari and paste the link there to complete Google sign-in.\n\nOnce done, come back here — Drive will be connected.');
+      } catch {
+        // Clipboard not available — try direct navigation.
+        window.location.href = data.url;
+      }
     } catch (e) {
       const message = (e as Error).message;
       setError(message);
@@ -644,8 +651,13 @@ export function App() {
       if (!res.ok) {
         throw new Error(data.error || 'Unable to get YouTube auth URL');
       }
-      addTrace('info', 'Opening YouTube consent screen.');
-      window.location.href = data.url;
+      addTrace('info', 'YouTube consent URL ready.');
+      try {
+        await navigator.clipboard.writeText(data.url);
+        alert('Auth link copied to clipboard!\n\nOpen Chrome or Safari and paste the link there to complete YouTube sign-in.\n\nOnce done, come back here — YouTube will be connected.');
+      } catch {
+        window.location.href = data.url;
+      }
     } catch (e) {
       const message = (e as Error).message;
       setError(message);
