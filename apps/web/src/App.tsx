@@ -16,7 +16,7 @@ import {
 } from './uploader.js';
 
 type SourceKind = 'camera' | 'screen' | 'ipcam';
-type StorageMode = 'local' | 'google-drive';
+type StorageMode = 'local' | 'google-drive' | 'youtube';
 type ChunkState = 'recorded' | 'uploading' | 'done' | 'error';
 type TraceKind = 'info' | 'success' | 'warn' | 'error';
 type QualityPreset = 'auto' | '480p' | '720p' | '1080p' | '4k';
@@ -73,6 +73,10 @@ interface StorageState {
   google: {
     linkedEmail: string;
     folderId?: string;
+    linked: boolean;
+  };
+  youtube?: {
+    linkedEmail: string;
     linked: boolean;
   };
   smtpLinked: boolean;
@@ -194,10 +198,13 @@ export function App() {
   }, []);
 
   const driveReady = Boolean(storageState?.google.linked);
+  const youtubeReady = Boolean(storageState?.youtube?.linked);
   const emailReady = Boolean(storageState?.smtpLinked);
   const storageSummary = storageMode === 'google-drive'
     ? (driveReady ? `Google Drive connected (${storageState?.google.linkedEmail || 'account linked'})` : 'Google Drive selected, not linked yet')
-    : 'Local storage active';
+    : storageMode === 'youtube'
+      ? (youtubeReady ? `YouTube connected (${storageState?.youtube?.linkedEmail || 'account linked'})` : 'YouTube selected, not linked yet')
+      : 'Local storage active';
 
   function getCameraVideoConstraints(): MediaTrackConstraints {
     const isLandscape = videoOrientation === 'landscape';
@@ -622,11 +629,27 @@ export function App() {
         throw new Error(data.error || 'Unable to get Google auth URL');
       }
       addTrace('info', `Opening Google consent screen for ${email}.`);
-      window.open(data.url, '_blank', 'noopener,noreferrer');
+      window.location.href = data.url;
     } catch (e) {
       const message = (e as Error).message;
       setError(message);
       addTrace('error', `Google Drive connect failed: ${message}`);
+    }
+  }
+
+  async function connectYouTube() {
+    try {
+      const res = await fetch(apiUrl('/api/auth/youtube/url'));
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Unable to get YouTube auth URL');
+      }
+      addTrace('info', 'Opening YouTube consent screen.');
+      window.location.href = data.url;
+    } catch (e) {
+      const message = (e as Error).message;
+      setError(message);
+      addTrace('error', `YouTube connect failed: ${message}`);
     }
   }
 
@@ -842,6 +865,7 @@ export function App() {
                     <select value={storageMode} onChange={(e) => setStorageMode(e.target.value as StorageMode)} disabled={recording}>
                       <option value="local">Local storage (free, no setup)</option>
                       <option value="google-drive">Google Drive</option>
+                      <option value="youtube">YouTube (unlisted)</option>
                     </select>
                   </div>
                 </div>
@@ -893,6 +917,25 @@ export function App() {
                     <div className="row" style={{ marginTop: 12, justifyContent: 'flex-end' }}>
                       <button type="button" className="secondary" onClick={connectGoogleDrive}>
                         Open Google consent
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {storageMode === 'youtube' && (
+                  <div style={{ marginTop: 12 }}>
+                    <p className="muted" style={{ marginBottom: 8 }}>
+                      Videos are uploaded as <b>unlisted</b> to YouTube. The email will contain a direct YouTube link.
+                      Note: YouTube Data API has a daily quota (~6 uploads/day on free tier).
+                    </p>
+                    {storageState?.youtube?.linkedEmail && (
+                      <div className="muted" style={{ marginTop: 8 }}>
+                        Currently linked YouTube account: {storageState.youtube.linkedEmail}
+                      </div>
+                    )}
+                    <div className="row" style={{ marginTop: 12, justifyContent: 'flex-end' }}>
+                      <button type="button" className="secondary" onClick={connectYouTube}>
+                        Open YouTube consent
                       </button>
                     </div>
                   </div>
