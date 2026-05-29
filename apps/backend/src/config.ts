@@ -24,6 +24,15 @@ export const config = {
     folderId: process.env.GOOGLE_DRIVE_FOLDER_ID ?? '',
   },
 
+  youtube: {
+    clientId: process.env.YOUTUBE_CLIENT_ID ?? process.env.GOOGLE_CLIENT_ID ?? '',
+    clientSecret: process.env.YOUTUBE_CLIENT_SECRET ?? process.env.GOOGLE_CLIENT_SECRET ?? '',
+    redirectUri:
+      process.env.YOUTUBE_REDIRECT_URI ??
+      'http://localhost:4000/api/auth/youtube/callback',
+    refreshToken: process.env.YOUTUBE_REFRESH_TOKEN ?? '',
+  },
+
   smtp: {
     host: process.env.SMTP_HOST ?? '',
     port: Number(process.env.SMTP_PORT ?? 465),

@@ -12,11 +12,13 @@ import { sanitizeRecipients, MAX_RECIPIENTS } from '@studiocam/shared';
 import { config } from './config.js';
 import { db } from './db.js';
 import { uploadToDrive, buildAuthUrl, exchangeCode, fetchAuthenticatedEmail } from './drive.js';
+import { uploadToYouTube, buildYouTubeAuthUrl, exchangeYouTubeCode, fetchYouTubeEmail } from './youtube.js';
 import { sendRecordingMail, testSmtpConnection } from './mailer.js';
 import { saveLocally } from './storage.js';
 import {
   driveLinked,
   driveOAuthClientReady,
+  youtubeLinked,
   loadStorageSettings,
   saveStorageSettings,
   smtpIsConfigured,
@@ -202,6 +204,10 @@ app.get('/api/storage/settings', (_req, res) => {
       linkedEmail: settings.google.linkedEmail,
       linked: driveLinked(settings),
     },
+    youtube: {
+      linkedEmail: settings.youtube.linkedEmail,
+      linked: youtubeLinked(settings),
+    },
     smtpLinked: smtpIsConfigured(settings),
     smtpLinkedEmail: settings.smtp.linkedEmail,
   });
@@ -209,7 +215,7 @@ app.get('/api/storage/settings', (_req, res) => {
 
 app.put('/api/storage/settings', (req, res) => {
   const payload = z.object({
-    storageMode: z.enum(['local', 'google-drive']).optional(),
+    storageMode: z.enum(['local', 'google-drive', 'youtube']).optional(),
     google: z.object({
       folderId: z.string().optional(),
     }).optional(),
@@ -226,6 +232,10 @@ app.put('/api/storage/settings', (req, res) => {
       linkedEmail: settings.google.linkedEmail,
       folderId: settings.google.folderId,
       linked: driveLinked(settings),
+    },
+    youtube: {
+      linkedEmail: settings.youtube.linkedEmail,
+      linked: youtubeLinked(settings),
     },
   });
 });
@@ -315,6 +325,46 @@ app.get('/api/auth/google/callback', async (req, res) => {
       <p><b>Authenticated account:</b> ${linkedEmail ?? 'unknown'}</p>
       ${mismatch ? `<p style="color:#f97316"><b>Warning:</b> You entered ${expectedEmail} but authenticated as ${linkedEmail}.</p>` : ''}
       <pre style="background:#111;color:#0f0;padding:1em;white-space:pre-wrap;">${tokens.refresh_token ?? '(none — re-run with prompt=consent)'}</pre>
+    `);
+  } catch (e) {
+    res.status(500).send((e as Error).message);
+  }
+});
+
+// ---------- YouTube OAuth ----------
+app.get('/api/auth/youtube/url', (_req, res) => {
+  const settings = loadStorageSettings();
+  if (!settings.youtube.clientId || !settings.youtube.clientSecret) {
+    return res.status(409).json({ error: 'YouTube client credentials not configured.' });
+  }
+  const url = buildYouTubeAuthUrl(settings.youtube);
+  res.json({ url });
+});
+
+app.get('/api/auth/youtube/callback', async (req, res) => {
+  const code = String(req.query.code ?? '');
+  if (!code) return res.status(400).send('Missing code');
+  try {
+    const settings = loadStorageSettings();
+    const tokens = await exchangeYouTubeCode(code, settings.youtube);
+    let linkedEmail: string | null = null;
+    try {
+      linkedEmail = await fetchYouTubeEmail(tokens, settings.youtube);
+    } catch (emailErr) {
+      console.warn('[studiocam][oauth:youtube] could not fetch email', {
+        error: emailErr instanceof Error ? emailErr.message : String(emailErr),
+      });
+    }
+    saveStorageSettings({
+      youtube: {
+        refreshToken: tokens.refresh_token ?? settings.youtube.refreshToken,
+        linkedEmail: linkedEmail ?? settings.youtube.linkedEmail,
+      },
+    });
+    res.type('html').send(`
+      <h2>YouTube linked ✓</h2>
+      <p>The refresh token has been saved. You can now switch the app to YouTube mode from the UI.</p>
+      <p><b>Authenticated account:</b> ${linkedEmail ?? 'unknown'}</p>
     `);
   } catch (e) {
     res.status(500).send((e as Error).message);
@@ -505,32 +555,43 @@ app.post(
       const storageSettings = loadStorageSettings();
       const shouldUseDrive =
         storageSettings.storageMode === 'google-drive' && driveLinked(storageSettings);
+      const shouldUseYouTube =
+        storageSettings.storageMode === 'youtube' && youtubeLinked(storageSettings);
 
       console.info('[studiocam][upload:storage-decision]', {
         traceId,
         storageMode: storageSettings.storageMode,
         driveLinked: driveLinked(storageSettings),
+        youtubeLinked: youtubeLinked(storageSettings),
         shouldUseDrive,
+        shouldUseYouTube,
         hasRefreshToken: Boolean(storageSettings.google.refreshToken),
         hasClientId: Boolean(storageSettings.google.clientId),
       });
 
-      const uploaded = shouldUseDrive
-        ? await uploadToDrive(filename, meta.mimeType, processedBuffer, storageSettings.google)
-        : await saveLocally(filename, processedBuffer);
+      const uploaded = shouldUseYouTube
+        ? await uploadToYouTube(filename, meta.mimeType, processedBuffer, storageSettings.youtube)
+        : shouldUseDrive
+          ? await uploadToDrive(filename, meta.mimeType, processedBuffer, storageSettings.google)
+          : await saveLocally(filename, processedBuffer);
+
+      const storageKind: 'google-drive' | 'youtube' | 'local' = shouldUseYouTube
+        ? 'youtube'
+        : shouldUseDrive ? 'google-drive' : 'local';
 
       console.info('[studiocam][upload:stored]', {
         traceId,
-        storageKind: shouldUseDrive ? 'google-drive' : 'local',
+        storageKind,
         fileId: uploaded.id,
         viewLink: uploaded.webViewLink,
       });
 
       const downloadLink =
         uploaded.webContentLink ||
-        `https://drive.google.com/uc?export=download&id=${uploaded.id}`;
+        (storageKind === 'google-drive'
+          ? `https://drive.google.com/uc?export=download&id=${uploaded.id}`
+          : uploaded.webViewLink);
 
-      const storageKind: 'google-drive' | 'local' = shouldUseDrive ? 'google-drive' : 'local';
       const id = crypto.randomUUID();
 
       // Persist the recording BEFORE attempting email, so the user can always retry email later.
@@ -581,7 +642,7 @@ app.post(
           viewLink: uploaded.webViewLink,
           downloadLink,
           sizeBytes: req.file.size,
-          storageLabel: shouldUseDrive ? 'the linked Google Drive' : 'local StudioCam storage',
+          storageLabel: shouldUseYouTube ? 'YouTube (unlisted)' : shouldUseDrive ? 'the linked Google Drive' : 'local StudioCam storage',
           socialMediaConsent,
           googleLinkedEmail: storageSettings.google.linkedEmail || undefined,
         }).then(() => {

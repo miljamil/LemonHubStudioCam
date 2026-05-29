@@ -1,13 +1,21 @@
 import { config } from './config.js';
 import { getSetting, setSetting } from './db.js';
 
-export type StorageMode = 'local' | 'google-drive';
+export type StorageMode = 'local' | 'google-drive' | 'youtube';
 
 export interface GoogleDriveSettings {
   clientId: string;
   clientSecret: string;
   redirectUri: string;
   folderId: string;
+  refreshToken: string;
+  linkedEmail: string;
+}
+
+export interface YouTubeSettings {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
   refreshToken: string;
   linkedEmail: string;
 }
@@ -25,6 +33,7 @@ export interface SmtpSettings {
 export interface StorageSettings {
   storageMode: StorageMode;
   google: GoogleDriveSettings;
+  youtube: YouTubeSettings;
   smtp: SmtpSettings;
 }
 
@@ -36,6 +45,13 @@ const DEFAULT_SETTINGS: StorageSettings = {
     redirectUri: config.google.redirectUri,
     folderId: config.google.folderId,
     refreshToken: config.google.refreshToken,
+    linkedEmail: '',
+  },
+  youtube: {
+    clientId: config.youtube.clientId,
+    clientSecret: config.youtube.clientSecret,
+    redirectUri: config.youtube.redirectUri,
+    refreshToken: config.youtube.refreshToken,
     linkedEmail: '',
   },
   smtp: {
@@ -64,9 +80,15 @@ export function loadStorageSettings(): StorageSettings {
 
   // Allow STORAGE_MODE env var to override DB (survives ephemeral DB resets on redeploy).
   const envStorageMode = process.env.STORAGE_MODE?.trim() as StorageMode | undefined;
-  const storageModeValue = envStorageMode && ['local', 'google-drive'].includes(envStorageMode)
+  const storageModeValue = envStorageMode && ['local', 'google-drive', 'youtube'].includes(envStorageMode)
     ? envStorageMode
     : (getSetting('storageMode') as StorageMode | null) ?? DEFAULT_SETTINGS.storageMode;
+
+  // YouTube credentials (reuses same Google Cloud project or separate).
+  const ytClientId = config.youtube.clientId || fromSettingOrDefault(getSetting('youtube.clientId'), DEFAULT_SETTINGS.youtube.clientId);
+  const ytClientSecret = config.youtube.clientSecret || fromSettingOrDefault(getSetting('youtube.clientSecret'), DEFAULT_SETTINGS.youtube.clientSecret);
+  const ytRedirectUri = config.youtube.redirectUri || fromSettingOrDefault(getSetting('youtube.redirectUri'), DEFAULT_SETTINGS.youtube.redirectUri);
+  const ytRefreshToken = config.youtube.refreshToken || fromSettingOrDefault(getSetting('youtube.refreshToken'), DEFAULT_SETTINGS.youtube.refreshToken);
 
   return {
     storageMode: storageModeValue,
@@ -77,6 +99,13 @@ export function loadStorageSettings(): StorageSettings {
       folderId: googleFolderId,
       refreshToken: googleRefreshToken,
       linkedEmail: getSetting('google.linkedEmail') ?? DEFAULT_SETTINGS.google.linkedEmail,
+    },
+    youtube: {
+      clientId: ytClientId,
+      clientSecret: ytClientSecret,
+      redirectUri: ytRedirectUri,
+      refreshToken: ytRefreshToken,
+      linkedEmail: getSetting('youtube.linkedEmail') ?? DEFAULT_SETTINGS.youtube.linkedEmail,
     },
     smtp: {
       host: fromSettingOrDefault(getSetting('smtp.host'), DEFAULT_SETTINGS.smtp.host),
@@ -93,6 +122,7 @@ export function loadStorageSettings(): StorageSettings {
 export function saveStorageSettings(input: {
   storageMode?: StorageMode;
   google?: Partial<GoogleDriveSettings>;
+  youtube?: Partial<YouTubeSettings>;
   smtp?: Partial<SmtpSettings>;
 }): StorageSettings {
   const current = loadStorageSettings();
@@ -105,6 +135,13 @@ export function saveStorageSettings(input: {
       folderId: input.google?.folderId ?? current.google.folderId,
       refreshToken: input.google?.refreshToken ?? current.google.refreshToken,
       linkedEmail: input.google?.linkedEmail ?? current.google.linkedEmail,
+    },
+    youtube: {
+      clientId: input.youtube?.clientId ?? current.youtube.clientId,
+      clientSecret: input.youtube?.clientSecret ?? current.youtube.clientSecret,
+      redirectUri: input.youtube?.redirectUri ?? current.youtube.redirectUri,
+      refreshToken: input.youtube?.refreshToken ?? current.youtube.refreshToken,
+      linkedEmail: input.youtube?.linkedEmail ?? current.youtube.linkedEmail,
     },
     smtp: {
       host: input.smtp?.host ?? current.smtp.host,
@@ -124,6 +161,11 @@ export function saveStorageSettings(input: {
   setSetting('google.folderId', next.google.folderId);
   setSetting('google.refreshToken', next.google.refreshToken);
   setSetting('google.linkedEmail', next.google.linkedEmail);
+  setSetting('youtube.clientId', next.youtube.clientId);
+  setSetting('youtube.clientSecret', next.youtube.clientSecret);
+  setSetting('youtube.redirectUri', next.youtube.redirectUri);
+  setSetting('youtube.refreshToken', next.youtube.refreshToken);
+  setSetting('youtube.linkedEmail', next.youtube.linkedEmail);
   setSetting('smtp.host', next.smtp.host);
   setSetting('smtp.port', String(next.smtp.port));
   setSetting('smtp.secure', String(next.smtp.secure));
@@ -153,6 +195,15 @@ export function driveLinked(settings = loadStorageSettings()): boolean {
       settings.google.clientSecret &&
       settings.google.redirectUri &&
       settings.google.refreshToken,
+  );
+}
+
+export function youtubeLinked(settings = loadStorageSettings()): boolean {
+  return Boolean(
+    settings.youtube.clientId &&
+      settings.youtube.clientSecret &&
+      settings.youtube.redirectUri &&
+      settings.youtube.refreshToken,
   );
 }
 
