@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import { Readable } from 'node:stream';
-import { config, assertDriveConfigured } from './config.js';
+import { config } from './config.js';
 import { GoogleDriveSettings, loadStorageSettings } from './storage-settings.js';
 
 function resolveGoogleSettings(override?: Partial<GoogleDriveSettings>) {
@@ -15,8 +15,10 @@ function resolveGoogleSettings(override?: Partial<GoogleDriveSettings>) {
 }
 
 function oauthClient(settings?: Partial<GoogleDriveSettings>) {
-  assertDriveConfigured();
   const googleSettings = resolveGoogleSettings(settings);
+  if (!googleSettings.clientId || !googleSettings.clientSecret || !googleSettings.refreshToken) {
+    throw new Error('Google Drive credentials incomplete. Ensure client ID, secret, and refresh token are configured (via env vars or OAuth setup).');
+  }
   const client = new google.auth.OAuth2(
     googleSettings.clientId,
     googleSettings.clientSecret,
