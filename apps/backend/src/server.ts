@@ -833,6 +833,52 @@ function guessExt(mime: string): string {
   return 'bin';
 }
 
+// ---------- Lightweight email endpoint for mobile clients (upload handled on-device) ----------
+const sendEmailSchema = z.object({
+  recipients: z.array(z.string().email()).min(1).max(MAX_RECIPIENTS),
+  filename: z.string().min(1),
+  viewLink: z.string().url(),
+  downloadLink: z.string().url().optional(),
+  sizeBytes: z.number().int().min(0),
+  storageLabel: z.string().optional(),
+  socialMediaConsent: z.boolean().optional(),
+});
+
+app.post('/api/send-email', async (req: Request, res: Response) => {
+  const traceId = crypto.randomUUID();
+  try {
+    if (!smtpIsConfigured()) {
+      return res.status(409).json({ error: 'Email transport not configured on backend.' });
+    }
+    const body = sendEmailSchema.parse(req.body);
+    const recipients = sanitizeRecipients(body.recipients);
+    if (recipients.length === 0) {
+      return res.status(400).json({ error: 'No valid recipients.' });
+    }
+
+    const storageSettings = loadStorageSettings();
+    await sendRecordingMail({
+      to: recipients,
+      sessionId: 'mobile',
+      chunkIndex: 0,
+      filename: body.filename,
+      viewLink: body.viewLink,
+      downloadLink: body.downloadLink ?? body.viewLink,
+      sizeBytes: body.sizeBytes,
+      storageLabel: body.storageLabel ?? 'cloud storage',
+      socialMediaConsent: body.socialMediaConsent ?? false,
+      googleLinkedEmail: storageSettings.google.linkedEmail || undefined,
+    });
+
+    console.info('[studiocam][send-email:ok]', { traceId, recipients });
+    res.json({ ok: true, recipients, traceId });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[studiocam][send-email:error]', { traceId, error: message });
+    res.status(500).json({ error: message, traceId });
+  }
+});
+
 app.listen(config.port, () => {
   // eslint-disable-next-line no-console
   console.log(`[studiocam-backend] listening on :${config.port}`);
