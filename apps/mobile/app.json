@@ -2,7 +2,8 @@
   "expo": {
     "name": "StudioCam",
     "slug": "studiocam",
-    "version": "0.1.0",
+    "version": "0.2.0",
+    "scheme": "com.studiocam.app",
     "orientation": "default",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -23,9 +24,10 @@
         "android.permission.READ_EXTERNAL_STORAGE"
       ]
     },
-    "plugins": ["expo-camera", "expo-media-library"],
+    "plugins": ["expo-camera", "expo-media-library", "expo-secure-store"],
     "extra": {
-      "backendUrl": "http://10.0.2.2:4000"
+      "backendUrl": "https://lemonhubstudiocam.onrender.com",
+      "googleClientId": "434149043545-b9ehq5md61vp1mck4f1tbr27b4arekor.apps.googleusercontent.com"
     }
   }
 }
