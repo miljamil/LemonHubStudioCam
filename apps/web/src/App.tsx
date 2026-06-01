@@ -674,28 +674,22 @@ export function App() {
       </p>
 
       <section className="panel">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <div>
-            <strong>Connections</strong>
-            <div className="muted">
-              Email delivery: {emailReady ? 'active (server-managed)' : 'not configured on backend'}.
-              {' '}Storage: {storageSummary}.
-            </div>
-          </div>
-          <div className="row">
-            <button type="button" onClick={() => setStorageModalOpen(true)} title="Settings" aria-label="Settings">
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            </button>
-          </div>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <label style={{ margin: 0 }}>Recipients (up to {MAX_RECIPIENTS})</label>
+          <button
+            type="button"
+            onClick={() => setStorageModalOpen(true)}
+            aria-label="Settings"
+            title={[
+              `Email: ${emailReady ? 'active (server-managed)' : 'not configured on backend'}`,
+              `Storage: ${storageSummary}`,
+              isSafari ? 'Safari: some sources and codecs are limited' : '',
+            ].filter(Boolean).join('\n')}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, lineHeight: 0, color: 'inherit', opacity: 0.7 }}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
         </div>
-        <div className="muted" style={{ marginTop: 8 }}>
-          Email sending is managed on the server (Resend/SMTP). Optionally connect Google Drive for cloud storage.
-          {isSafari && ' Safari on recent iPadOS versions can record camera video, but some sources and codecs are more limited.'}
-        </div>
-      </section>
-
-      <section className="panel">
-        <label>Recipients (up to {MAX_RECIPIENTS})</label>
         <div className="row">
           {emails.map((v, i) => (
             <input
