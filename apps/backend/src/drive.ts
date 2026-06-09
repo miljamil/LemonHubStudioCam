@@ -67,6 +67,7 @@ export async function exchangeCode(code: string, settings?: Partial<GoogleDriveS
     googleSettings.redirectUri,
   );
   const { tokens } = await client.getToken(code);
+  console.log(tokens);
   return tokens;
 }
 
