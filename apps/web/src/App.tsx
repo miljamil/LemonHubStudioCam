@@ -90,6 +90,67 @@ function uuid(): string {
   });
 }
 
+// ---------- Client-side rate limit: max N recordings per user per rolling window ----------
+const MAX_RECORDINGS_PER_HOUR = 2;
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+// v2 stores a map { [userKey]: number[] } so the limit is scoped per recipient set.
+const RATE_LIMIT_STORAGE_KEY = 'studiocam.recordingStarts.v2';
+
+type RateLimitMap = Record<string, number[]>;
+
+function userKeyFor(recipients: string[]): string {
+  // Sort + lowercase so ["a@x","b@x"] and ["B@X","a@x"] map to the same bucket.
+  return recipients
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join(',');
+}
+
+function loadRateLimitMap(): RateLimitMap {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(RATE_LIMIT_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS;
+    const out: RateLimitMap = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(value)) continue;
+      const ts = value
+        .filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n > cutoff)
+        .sort((a, b) => a - b);
+      if (ts.length > 0) out[key] = ts;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function persistRateLimitMap(map: RateLimitMap): void {
+  if (typeof window === 'undefined') return;
+  try {
+    // Drop empty buckets to keep storage tidy.
+    const cleaned: RateLimitMap = {};
+    for (const [k, v] of Object.entries(map)) {
+      if (v.length > 0) cleaned[k] = v;
+    }
+    window.localStorage.setItem(RATE_LIMIT_STORAGE_KEY, JSON.stringify(cleaned));
+  } catch {
+    // Storage unavailable (private mode, quota) — limit still enforced in-memory this session.
+  }
+}
+
+function formatRateLimitCountdown(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  if (m === 0) return `${s}s`;
+  return `${m}m ${String(s).padStart(2, '0')}s`;
+}
+
 export function App() {
   const [emails, setEmails] = useState<string[]>(['', '', '']);
   const [label, setLabel] = useState('');
@@ -130,7 +191,33 @@ export function App() {
   const isSafari = typeof navigator !== 'undefined'
     && /Safari/i.test(navigator.userAgent)
     && !/Chrome|Chromium|Android/i.test(navigator.userAgent);
-  const canRecord = cleanRecipients.length > 0 && !recording &&
+
+  // Rate limit: only allow MAX_RECORDINGS_PER_HOUR starts in a rolling 1h window,
+  // scoped per recipient set. Changing the emails switches to a fresh bucket.
+  const [rateLimitMap, setRateLimitMap] = useState<RateLimitMap>(() => loadRateLimitMap());
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  const currentUserKey = useMemo(() => userKeyFor(cleanRecipients), [cleanRecipients]);
+  const recentStarts = useMemo(() => {
+    if (!currentUserKey) return [];
+    const cutoff = nowMs - RATE_LIMIT_WINDOW_MS;
+    return (rateLimitMap[currentUserKey] ?? []).filter((t) => t > cutoff);
+  }, [rateLimitMap, currentUserKey, nowMs]);
+  const limitReached = Boolean(currentUserKey) && recentStarts.length >= MAX_RECORDINGS_PER_HOUR;
+  const nextAvailableAt = limitReached
+    ? recentStarts[recentStarts.length - MAX_RECORDINGS_PER_HOUR] + RATE_LIMIT_WINDOW_MS
+    : null;
+  const waitMs = nextAvailableAt ? Math.max(0, nextAvailableAt - nowMs) : 0;
+  const remainingRecordings = Math.max(0, MAX_RECORDINGS_PER_HOUR - recentStarts.length);
+
+  // Keep the countdown ticking (and auto-clear the limit) while it applies.
+  useEffect(() => {
+    if (!limitReached) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [limitReached]);
+
+  const canRecord = cleanRecipients.length > 0 && !recording && !limitReached &&
     (source !== 'ipcam' || ipUrl.trim().length > 0);
   const preferFrontCamera = useMemo(() => {
     if (typeof navigator === 'undefined' || typeof window === 'undefined') return false;
@@ -317,6 +404,26 @@ export function App() {
     setError(null);
     setChunks([]);
     setTraces([]);
+    // Re-check the rate limit at the moment of the click (guards against stale UI).
+    const now = Date.now();
+    const key = userKeyFor(cleanRecipients);
+    const activeStarts = key
+      ? (rateLimitMap[key] ?? []).filter((t) => t > now - RATE_LIMIT_WINDOW_MS)
+      : [];
+    if (key && activeStarts.length >= MAX_RECORDINGS_PER_HOUR) {
+      const wait = activeStarts[activeStarts.length - MAX_RECORDINGS_PER_HOUR] + RATE_LIMIT_WINDOW_MS - now;
+      const msg = `Recording limit reached (${MAX_RECORDINGS_PER_HOUR}/hour) for these recipients. Try again in ${formatRateLimitCountdown(wait)}.`;
+      setError(msg);
+      addTrace('warn', msg);
+      // Refresh state so UI re-renders with limit applied.
+      setRateLimitMap((prev) => {
+        const next = { ...prev, [key]: activeStarts };
+        persistRateLimitMap(next);
+        return next;
+      });
+      setNowMs(now);
+      return;
+    }
     try {
       if (!pickMimeType()) {
         setError('This browser has no compatible MediaRecorder codec. Try Chrome/Edge.');
@@ -354,6 +461,19 @@ export function App() {
 
       recordingRef.current = true;
       setRecording(true);
+      // Record this start against the rolling hourly limit, scoped to the current recipient set.
+      const startedAt = Date.now();
+      const bucketKey = userKeyFor(cleanRecipients);
+      if (bucketKey) {
+        setRateLimitMap((prev) => {
+          const cutoff = startedAt - RATE_LIMIT_WINDOW_MS;
+          const prior = (prev[bucketKey] ?? []).filter((t) => t > cutoff);
+          const next = { ...prev, [bucketKey]: [...prior, startedAt].sort((a, b) => a - b) };
+          persistRateLimitMap(next);
+          return next;
+        });
+      }
+      setNowMs(startedAt);
       addTrace('success', `Recording started. Auto-split set to ${splitMin} minutes.`);
       const t0 = Date.now();
       setElapsed(0);
@@ -776,9 +896,29 @@ export function App() {
                 {/* Center-aligned button */}
                 <div style={{ flex: 1, textAlign: "center" }}>
                   {!recording ? (
-                    <button className="primary" disabled={!canRecord} onClick={start}>
-                      ● Record Your Song
-                    </button>
+                    <>
+                      <button
+                        className="primary"
+                        disabled={!canRecord}
+                        onClick={start}
+                        title={
+                          limitReached
+                            ? `Limit of ${MAX_RECORDINGS_PER_HOUR} recordings/hour reached. Available in ${formatRateLimitCountdown(waitMs)}.`
+                            : undefined
+                        }
+                      >
+                        {limitReached ? `⏳ Available in ${formatRateLimitCountdown(waitMs)}` : '● Record Your Song'}
+                      </button>
+                      <div
+                        className="muted"
+                        style={{ marginTop: 6, fontSize: 12, color: limitReached ? '#f97316' : undefined }}
+                        aria-live="polite"
+                      >
+                        {limitReached
+                          ? `You've hit the limit of ${MAX_RECORDINGS_PER_HOUR} recordings per hour. The Record button will re-enable automatically in ${formatRateLimitCountdown(waitMs)}.`
+                          : `${remainingRecordings} of ${MAX_RECORDINGS_PER_HOUR} recording${remainingRecordings === 1 ? '' : 's'} left this hour`}
+                      </div>
+                    </>
                   ) : (
                     <button
                       onClick={stop}
