@@ -30,9 +30,11 @@ export interface UploadResponse {
   filename?: string;
   recipients?: string[];
   emailedTo: string[];
-  storageKind?: 'google-drive' | 'local';
+  storageKind?: 'google-drive' | 'youtube' | 'local';
   mailStatus?: MailStatus;
   mailError?: string;
+  /** Set when a cloud upload failed and the server fell back to local storage. */
+  fallbackReason?: string | null;
   traceId?: string;
 }
 

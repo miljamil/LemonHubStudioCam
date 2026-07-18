@@ -55,6 +55,8 @@ interface ChunkRow {
   error?: string;
   /** Attempt counter shown during retries. */
   attemptInfo?: string;
+  /** When the server had to fall back from cloud → local storage. */
+  fallbackReason?: string;
   /** Kept in memory so the user can retry upload or download manually if upload failed. */
   payload?: ChunkPayload;
   /** True while a manual retry/resend is running. */
@@ -583,6 +585,9 @@ export function App() {
           (r.mailError ? ` Email error: ${r.mailError}` : '') +
           ` Trace ${r.traceId ?? 'n/a'}.`,
       );
+      if (r.fallbackReason) {
+        addTrace('warn', `Chunk ${chunk.index + 1}: ${r.fallbackReason}`);
+      }
       setChunks((prev) =>
         prev.map((c) =>
           c.index === chunk.index
@@ -597,6 +602,7 @@ export function App() {
                 mailError: r.mailError,
                 recipients: r.recipients ?? c.recipients,
                 attemptInfo: undefined,
+                fallbackReason: r.fallbackReason ?? undefined,
                 error: undefined,
                 busy: false,
               }
@@ -1316,6 +1322,18 @@ export function App() {
                   )}
                   {c.mailError && (
                     <div className="error" style={{ flexBasis: '100%' }}>Email: {c.mailError}</div>
+                  )}
+                  {c.fallbackReason && (
+                    <div
+                      style={{
+                        flexBasis: '100%',
+                        color: '#f97316',
+                        fontSize: 12,
+                        marginTop: 2,
+                      }}
+                    >
+                      ⚠ {c.fallbackReason}
+                    </div>
                   )}
                 </li>
               );
