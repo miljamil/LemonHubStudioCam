@@ -22,6 +22,7 @@ export const config = {
       'http://localhost:4000/api/auth/google/callback',
     refreshToken: process.env.GOOGLE_REFRESH_TOKEN ?? '',
     folderId: process.env.GOOGLE_DRIVE_FOLDER_ID ?? '',
+    linkedEmail: process.env.GOOGLE_LINKED_EMAIL ?? '',
   },
 
   youtube: {

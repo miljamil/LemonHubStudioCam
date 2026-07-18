@@ -45,7 +45,7 @@ const DEFAULT_SETTINGS: StorageSettings = {
     redirectUri: config.google.redirectUri,
     folderId: config.google.folderId,
     refreshToken: config.google.refreshToken,
-    linkedEmail: '',
+    linkedEmail: config.google.linkedEmail,
   },
   youtube: {
     clientId: config.youtube.clientId,
@@ -80,9 +80,19 @@ export function loadStorageSettings(): StorageSettings {
 
   // Allow STORAGE_MODE env var to override DB (survives ephemeral DB resets on redeploy).
   const envStorageMode = process.env.STORAGE_MODE?.trim() as StorageMode | undefined;
-  const storageModeValue = envStorageMode && ['local', 'google-drive', 'youtube'].includes(envStorageMode)
-    ? envStorageMode
-    : (getSetting('storageMode') as StorageMode | null) ?? DEFAULT_SETTINGS.storageMode;
+  const dbStorageMode = getSetting('storageMode') as StorageMode | null;
+  const driveFullyLinked = Boolean(
+    googleClientId && googleClientSecret && googleRedirectUri && googleRefreshToken,
+  );
+  // Priority: STORAGE_MODE env > user-saved DB value > auto (google-drive if linked) > default.
+  const storageModeValue: StorageMode =
+    envStorageMode && ['local', 'google-drive', 'youtube'].includes(envStorageMode)
+      ? envStorageMode
+      : dbStorageMode
+        ? dbStorageMode
+        : driveFullyLinked
+          ? 'google-drive'
+          : DEFAULT_SETTINGS.storageMode;
 
   // YouTube credentials (reuses same Google Cloud project or separate).
   const ytClientId = config.youtube.clientId || fromSettingOrDefault(getSetting('youtube.clientId'), DEFAULT_SETTINGS.youtube.clientId);
@@ -98,7 +108,7 @@ export function loadStorageSettings(): StorageSettings {
       redirectUri: googleRedirectUri,
       folderId: googleFolderId,
       refreshToken: googleRefreshToken,
-      linkedEmail: getSetting('google.linkedEmail') ?? DEFAULT_SETTINGS.google.linkedEmail,
+      linkedEmail: fromSettingOrDefault(getSetting('google.linkedEmail'), DEFAULT_SETTINGS.google.linkedEmail),
     },
     youtube: {
       clientId: ytClientId,
