@@ -1033,17 +1033,40 @@ export function App() {
 
                 {storageMode === 'google-drive' && (
                   <div style={{ marginTop: 12 }}>
-                    <p className="muted" style={{ marginBottom: 8 }}>
-                      To use Google Drive you need OAuth credentials from Google Cloud Console.
-                      This is an advanced option — local storage works fine for most use cases.
-                    </p>
+                    {driveReady ? (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '10px 12px',
+                          borderRadius: 8,
+                          background: 'rgba(34,197,94,0.12)',
+                          border: '1px solid rgba(34,197,94,0.5)',
+                          color: '#4ade80',
+                          fontWeight: 600,
+                          marginBottom: 10,
+                        }}
+                      >
+                        <span aria-hidden="true">✓</span>
+                        <span>
+                          Google Drive connected
+                          {storageState?.google.linkedEmail ? ` — ${storageState.google.linkedEmail}` : ''}
+                        </span>
+                      </div>
+                    ) : (
+                      <p className="muted" style={{ marginBottom: 8 }}>
+                        To use Google Drive you need OAuth credentials from Google Cloud Console.
+                        This is an advanced option — local storage works fine for most use cases.
+                      </p>
+                    )}
                     <div className="row">
                       <div style={{ flex: 1 }}>
                         <label>Business Google email</label>
                         <input
                           style={{ width: '100%' }}
                           value={googleBusinessEmail}
-                          disabled={recording}
+                          disabled={recording || driveReady}
                           onChange={(e) => setGoogleBusinessEmail(e.target.value)}
                           placeholder="owner@business.com"
                         />
@@ -1061,14 +1084,9 @@ export function App() {
                         />
                       </div>
                     </div>
-                    {storageState?.google.linkedEmail && (
-                      <div className="muted" style={{ marginTop: 8 }}>
-                        Currently linked account: {storageState.google.linkedEmail}
-                      </div>
-                    )}
                     <div className="row" style={{ marginTop: 12, justifyContent: 'flex-end' }}>
                       <button type="button" className="secondary" onClick={connectGoogleDrive}>
-                        Open Google consent
+                        {driveReady ? 'Re-link a different account' : 'Open Google consent'}
                       </button>
                     </div>
                   </div>
@@ -1076,18 +1094,36 @@ export function App() {
 
                 {storageMode === 'youtube' && (
                   <div style={{ marginTop: 12 }}>
-                    <p className="muted" style={{ marginBottom: 8 }}>
-                      Videos are uploaded as <b>unlisted</b> to YouTube. The email will contain a direct YouTube link.
-                      Note: YouTube Data API has a daily quota (~6 uploads/day on free tier).
-                    </p>
-                    {storageState?.youtube?.linkedEmail && (
-                      <div className="muted" style={{ marginTop: 8 }}>
-                        Currently linked YouTube account: {storageState.youtube.linkedEmail}
+                    {youtubeReady ? (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '10px 12px',
+                          borderRadius: 8,
+                          background: 'rgba(34,197,94,0.12)',
+                          border: '1px solid rgba(34,197,94,0.5)',
+                          color: '#4ade80',
+                          fontWeight: 600,
+                          marginBottom: 10,
+                        }}
+                      >
+                        <span aria-hidden="true">✓</span>
+                        <span>
+                          YouTube connected
+                          {storageState?.youtube?.linkedEmail ? ` — ${storageState.youtube.linkedEmail}` : ''}
+                        </span>
                       </div>
+                    ) : (
+                      <p className="muted" style={{ marginBottom: 8 }}>
+                        Videos are uploaded as <b>unlisted</b> to YouTube. The email will contain a direct YouTube link.
+                        Note: YouTube Data API has a daily quota (~6 uploads/day on free tier).
+                      </p>
                     )}
                     <div className="row" style={{ marginTop: 12, justifyContent: 'flex-end' }}>
                       <button type="button" className="secondary" onClick={connectYouTube}>
-                        Open YouTube consent
+                        {youtubeReady ? 'Re-link a different account' : 'Open YouTube consent'}
                       </button>
                     </div>
                   </div>
