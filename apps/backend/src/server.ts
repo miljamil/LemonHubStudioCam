@@ -645,21 +645,47 @@ app.post(
       const shouldUseDrive = isDriveMode && driveReady;
       const shouldUseYouTube = isYouTubeMode && youtubeReady;
 
-      const uploaded = shouldUseYouTube
-        ? await uploadToYouTube(filename, meta.mimeType, processedBuffer, storageSettings.youtube)
-        : shouldUseDrive
-          ? await uploadToDrive(filename, meta.mimeType, processedBuffer, storageSettings.google)
-          : await saveLocally(filename, processedBuffer);
+      // Cloud uploads can fail transiently (rate limits, quota, network).
+      // Fall back to local disk so the recording is never lost, and surface
+      // the fallback reason to the client.
+      type StoredResult = { id: string; webViewLink: string; webContentLink?: string };
+      let uploaded: StoredResult;
+      let storageKind: 'google-drive' | 'youtube' | 'local';
+      let fallbackReason: string | null = null;
 
-      const storageKind: 'google-drive' | 'youtube' | 'local' = shouldUseYouTube
-        ? 'youtube'
-        : shouldUseDrive ? 'google-drive' : 'local';
+      if (shouldUseYouTube) {
+        try {
+          uploaded = await uploadToYouTube(filename, meta.mimeType, processedBuffer, storageSettings.youtube);
+          storageKind = 'youtube';
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('[studiocam][upload:cloud-failed] YouTube upload failed, falling back to local storage', { traceId, error: message });
+          fallbackReason = `YouTube upload failed (${message}); saved locally on the server as backup.`;
+          uploaded = await saveLocally(filename, processedBuffer);
+          storageKind = 'local';
+        }
+      } else if (shouldUseDrive) {
+        try {
+          uploaded = await uploadToDrive(filename, meta.mimeType, processedBuffer, storageSettings.google);
+          storageKind = 'google-drive';
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('[studiocam][upload:cloud-failed] Google Drive upload failed, falling back to local storage', { traceId, error: message });
+          fallbackReason = `Google Drive upload failed (${message}); saved locally on the server as backup.`;
+          uploaded = await saveLocally(filename, processedBuffer);
+          storageKind = 'local';
+        }
+      } else {
+        uploaded = await saveLocally(filename, processedBuffer);
+        storageKind = 'local';
+      }
 
       console.info('[studiocam][upload:stored]', {
         traceId,
         storageKind,
         fileId: uploaded.id,
         viewLink: uploaded.webViewLink,
+        fallbackReason,
       });
 
       const downloadLink =
@@ -705,6 +731,7 @@ app.post(
         emailedTo: [],
         storageKind,
         mailStatus: smtpIsConfigured() ? 'pending' : 'skipped-smtp',
+        fallbackReason,
         traceId,
       });
 
@@ -718,7 +745,13 @@ app.post(
           viewLink: uploaded.webViewLink,
           downloadLink,
           sizeBytes: req.file.size,
-          storageLabel: shouldUseYouTube ? 'YouTube (unlisted)' : shouldUseDrive ? 'the linked Google Drive' : 'local StudioCam storage',
+          storageLabel: storageKind === 'youtube'
+            ? 'YouTube (unlisted)'
+            : storageKind === 'google-drive'
+              ? 'the linked Google Drive'
+              : fallbackReason
+                ? 'local StudioCam storage (cloud upload failed — see server for details)'
+                : 'local StudioCam storage',
           socialMediaConsent,
           googleLinkedEmail: storageSettings.google.linkedEmail || undefined,
         }).then(() => {
