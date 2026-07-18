@@ -90,21 +90,18 @@ function uuid(): string {
   });
 }
 
-// ---------- Client-side rate limit: max N recordings per user per rolling window ----------
+// ---------- Client-side rate limit: max N recordings per email per rolling window ----------
 const MAX_RECORDINGS_PER_HOUR = 2;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
-// v2 stores a map { [userKey]: number[] } so the limit is scoped per recipient set.
-const RATE_LIMIT_STORAGE_KEY = 'studiocam.recordingStarts.v2';
+// v3 stores { [email: string]: number[] } so limits follow individual recipients.
+// If ANY current recipient still has history, the limit carries over — only a
+// fully fresh recipient set resets the counter.
+const RATE_LIMIT_STORAGE_KEY = 'studiocam.recordingStarts.v3';
 
 type RateLimitMap = Record<string, number[]>;
 
-function userKeyFor(recipients: string[]): string {
-  // Sort + lowercase so ["a@x","b@x"] and ["B@X","a@x"] map to the same bucket.
-  return recipients
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean)
-    .sort()
-    .join(',');
+function normalizeEmails(recipients: string[]): string[] {
+  return recipients.map((e) => e.trim().toLowerCase()).filter(Boolean);
 }
 
 function loadRateLimitMap(): RateLimitMap {
@@ -121,7 +118,7 @@ function loadRateLimitMap(): RateLimitMap {
       const ts = value
         .filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n > cutoff)
         .sort((a, b) => a - b);
-      if (ts.length > 0) out[key] = ts;
+      if (ts.length > 0) out[key.toLowerCase()] = ts;
     }
     return out;
   } catch {
@@ -141,6 +138,22 @@ function persistRateLimitMap(map: RateLimitMap): void {
   } catch {
     // Storage unavailable (private mode, quota) — limit still enforced in-memory this session.
   }
+}
+
+/**
+ * Merge unique, sorted timestamps across all current recipient emails.
+ * Any overlap with a prior recipient keeps the counter — adding a new email
+ * next to an existing one does NOT reset the limit.
+ */
+function collectStartsFor(map: RateLimitMap, recipients: string[], now: number): number[] {
+  const cutoff = now - RATE_LIMIT_WINDOW_MS;
+  const seen = new Set<number>();
+  for (const email of normalizeEmails(recipients)) {
+    for (const t of map[email] ?? []) {
+      if (t > cutoff) seen.add(t);
+    }
+  }
+  return Array.from(seen).sort((a, b) => a - b);
 }
 
 function formatRateLimitCountdown(ms: number): string {
@@ -193,17 +206,15 @@ export function App() {
     && !/Chrome|Chromium|Android/i.test(navigator.userAgent);
 
   // Rate limit: only allow MAX_RECORDINGS_PER_HOUR starts in a rolling 1h window,
-  // scoped per recipient set. Changing the emails switches to a fresh bucket.
+  // scoped per recipient email. Any overlap with a prior recipient keeps history.
   const [rateLimitMap, setRateLimitMap] = useState<RateLimitMap>(() => loadRateLimitMap());
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
-  const currentUserKey = useMemo(() => userKeyFor(cleanRecipients), [cleanRecipients]);
-  const recentStarts = useMemo(() => {
-    if (!currentUserKey) return [];
-    const cutoff = nowMs - RATE_LIMIT_WINDOW_MS;
-    return (rateLimitMap[currentUserKey] ?? []).filter((t) => t > cutoff);
-  }, [rateLimitMap, currentUserKey, nowMs]);
-  const limitReached = Boolean(currentUserKey) && recentStarts.length >= MAX_RECORDINGS_PER_HOUR;
+  const recentStarts = useMemo(
+    () => collectStartsFor(rateLimitMap, cleanRecipients, nowMs),
+    [rateLimitMap, cleanRecipients, nowMs],
+  );
+  const limitReached = cleanRecipients.length > 0 && recentStarts.length >= MAX_RECORDINGS_PER_HOUR;
   const nextAvailableAt = limitReached
     ? recentStarts[recentStarts.length - MAX_RECORDINGS_PER_HOUR] + RATE_LIMIT_WINDOW_MS
     : null;
@@ -406,21 +417,12 @@ export function App() {
     setTraces([]);
     // Re-check the rate limit at the moment of the click (guards against stale UI).
     const now = Date.now();
-    const key = userKeyFor(cleanRecipients);
-    const activeStarts = key
-      ? (rateLimitMap[key] ?? []).filter((t) => t > now - RATE_LIMIT_WINDOW_MS)
-      : [];
-    if (key && activeStarts.length >= MAX_RECORDINGS_PER_HOUR) {
+    const activeStarts = collectStartsFor(rateLimitMap, cleanRecipients, now);
+    if (cleanRecipients.length > 0 && activeStarts.length >= MAX_RECORDINGS_PER_HOUR) {
       const wait = activeStarts[activeStarts.length - MAX_RECORDINGS_PER_HOUR] + RATE_LIMIT_WINDOW_MS - now;
       const msg = `Recording limit reached (${MAX_RECORDINGS_PER_HOUR}/hour) for these recipients. Try again in ${formatRateLimitCountdown(wait)}.`;
       setError(msg);
       addTrace('warn', msg);
-      // Refresh state so UI re-renders with limit applied.
-      setRateLimitMap((prev) => {
-        const next = { ...prev, [key]: activeStarts };
-        persistRateLimitMap(next);
-        return next;
-      });
       setNowMs(now);
       return;
     }
@@ -461,14 +463,18 @@ export function App() {
 
       recordingRef.current = true;
       setRecording(true);
-      // Record this start against the rolling hourly limit, scoped to the current recipient set.
+      // Record this start against the rolling hourly limit for EVERY current recipient email,
+      // so overlap on any future recipient list keeps the counter.
       const startedAt = Date.now();
-      const bucketKey = userKeyFor(cleanRecipients);
-      if (bucketKey) {
+      const activeEmails = normalizeEmails(cleanRecipients);
+      if (activeEmails.length > 0) {
         setRateLimitMap((prev) => {
           const cutoff = startedAt - RATE_LIMIT_WINDOW_MS;
-          const prior = (prev[bucketKey] ?? []).filter((t) => t > cutoff);
-          const next = { ...prev, [bucketKey]: [...prior, startedAt].sort((a, b) => a - b) };
+          const next: RateLimitMap = { ...prev };
+          for (const email of activeEmails) {
+            const prior = (next[email] ?? []).filter((t) => t > cutoff);
+            next[email] = [...prior, startedAt].sort((a, b) => a - b);
+          }
           persistRateLimitMap(next);
           return next;
         });
