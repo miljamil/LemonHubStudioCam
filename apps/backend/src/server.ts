@@ -202,15 +202,66 @@ app.get('/api/storage/settings', (_req, res) => {
     storageMode: settings.storageMode,
     google: {
       linkedEmail: settings.google.linkedEmail,
+      folderId: settings.google.folderId,
       linked: driveLinked(settings),
+      hasClientId: Boolean(settings.google.clientId),
+      hasClientSecret: Boolean(settings.google.clientSecret),
+      hasRefreshToken: Boolean(settings.google.refreshToken),
+      hasRedirectUri: Boolean(settings.google.redirectUri),
     },
     youtube: {
       linkedEmail: settings.youtube.linkedEmail,
       linked: youtubeLinked(settings),
+      hasRefreshToken: Boolean(settings.youtube.refreshToken),
     },
     smtpLinked: smtpIsConfigured(settings),
     smtpLinkedEmail: settings.smtp.linkedEmail,
   });
+});
+
+// Diagnostic endpoint: test if Drive/YouTube credentials can actually refresh a token
+app.get('/api/storage/health', async (_req, res) => {
+  const settings = loadStorageSettings();
+  const result: Record<string, unknown> = {
+    storageMode: settings.storageMode,
+    drive: { linked: driveLinked(settings), canRefresh: false, error: null as string | null },
+    youtube: { linked: youtubeLinked(settings), canRefresh: false, error: null as string | null },
+    email: { configured: smtpIsConfigured(settings) },
+  };
+
+  if (driveLinked(settings)) {
+    try {
+      const { google: goog } = await import('googleapis');
+      const client = new goog.auth.OAuth2(
+        settings.google.clientId,
+        settings.google.clientSecret,
+        settings.google.redirectUri,
+      );
+      client.setCredentials({ refresh_token: settings.google.refreshToken });
+      const { token } = await client.getAccessToken();
+      (result.drive as any).canRefresh = Boolean(token);
+    } catch (e) {
+      (result.drive as any).error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  if (youtubeLinked(settings)) {
+    try {
+      const { google: goog } = await import('googleapis');
+      const client = new goog.auth.OAuth2(
+        settings.youtube.clientId,
+        settings.youtube.clientSecret,
+        settings.youtube.redirectUri,
+      );
+      client.setCredentials({ refresh_token: settings.youtube.refreshToken });
+      const { token } = await client.getAccessToken();
+      (result.youtube as any).canRefresh = Boolean(token);
+    } catch (e) {
+      (result.youtube as any).error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  res.json(result);
 });
 
 app.put('/api/storage/settings', (req, res) => {
@@ -553,21 +604,46 @@ app.post(
       }
 
       const storageSettings = loadStorageSettings();
-      const shouldUseDrive =
-        storageSettings.storageMode === 'google-drive' && driveLinked(storageSettings);
-      const shouldUseYouTube =
-        storageSettings.storageMode === 'youtube' && youtubeLinked(storageSettings);
+      const isDriveMode = storageSettings.storageMode === 'google-drive';
+      const isYouTubeMode = storageSettings.storageMode === 'youtube';
+      const driveReady = driveLinked(storageSettings);
+      const youtubeReady = youtubeLinked(storageSettings);
 
       console.info('[studiocam][upload:storage-decision]', {
         traceId,
         storageMode: storageSettings.storageMode,
-        driveLinked: driveLinked(storageSettings),
-        youtubeLinked: youtubeLinked(storageSettings),
-        shouldUseDrive,
-        shouldUseYouTube,
+        driveLinked: driveReady,
+        youtubeLinked: youtubeReady,
         hasRefreshToken: Boolean(storageSettings.google.refreshToken),
         hasClientId: Boolean(storageSettings.google.clientId),
       });
+
+      // FAIL LOUDLY if the user configured cloud storage but credentials are missing.
+      // This prevents silently saving to ephemeral local storage (useless on Render).
+      if (isDriveMode && !driveReady) {
+        console.error('[studiocam][upload:storage-decision] STORAGE_MODE=google-drive but driveLinked()=false. Missing GOOGLE_REFRESH_TOKEN?', {
+          traceId,
+          hasClientId: Boolean(storageSettings.google.clientId),
+          hasClientSecret: Boolean(storageSettings.google.clientSecret),
+          hasRedirectUri: Boolean(storageSettings.google.redirectUri),
+          hasRefreshToken: Boolean(storageSettings.google.refreshToken),
+        });
+        return res.status(503).json({
+          error: 'Google Drive is configured as storage but credentials are incomplete. The GOOGLE_REFRESH_TOKEN may be missing from environment variables (lost after redeploy). Re-run the OAuth flow or set the env var.',
+          traceId,
+          hint: 'Set GOOGLE_REFRESH_TOKEN in your Render environment variables so it survives redeployments.',
+        });
+      }
+      if (isYouTubeMode && !youtubeReady) {
+        console.error('[studiocam][upload:storage-decision] STORAGE_MODE=youtube but youtubeLinked()=false', { traceId });
+        return res.status(503).json({
+          error: 'YouTube is configured as storage but credentials are incomplete. Re-run YouTube OAuth or set YOUTUBE_REFRESH_TOKEN env var.',
+          traceId,
+        });
+      }
+
+      const shouldUseDrive = isDriveMode && driveReady;
+      const shouldUseYouTube = isYouTubeMode && youtubeReady;
 
       const uploaded = shouldUseYouTube
         ? await uploadToYouTube(filename, meta.mimeType, processedBuffer, storageSettings.youtube)
